@@ -8,6 +8,7 @@
 
 <a href='https://arxiv.org/pdf/2505.11865'><img src='https://img.shields.io/badge/Paper-PDF-red?style=flat&logo=arXiv&logoColor=red' alt='Paper PDF'></a>
 <a href='https://teleema.github.io/projects/GLOVER++/'><img src='https://img.shields.io/badge/Project-Page-blue?style=flat&logo=Google%20chrome&logoColor=blue' alt='Project Page'></a>
+<a href='https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main'><img src='https://img.shields.io/badge/Dataset-HF-yellow?style=flat&logo=Huggingface&logoColor=yellow' alt='Dataset HF'></a>
 
 
 ## Abstract

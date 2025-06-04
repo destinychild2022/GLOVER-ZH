@@ -60,11 +60,10 @@ cat epic-100/part_* > epic-100.tar.gz
 │   └── epic-100
 ```
 The "annotations" files should be put in the same directory as the training code.
-```
 
 ### Training
 Basic training command:
-```bash
+```
 bash train_glover.sh
 ```
 

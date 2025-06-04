@@ -17,14 +17,7 @@ from model.segment_anything.utils.transforms import ResizeLongestSide
 from .utils import ANSWER_LIST, SHORT_QUESTION_LIST
 
 
-def init_epic100(base_image_dir, aff_type):
-    if aff_type == "mp":
-        aff_dir = "GT_gaussian"
-    elif aff_type == "sp" or aff_type == "adapt":
-        aff_dir = "GT_gaussian_sp"
-    else:
-        raise ValueError("epic100: aff_type should be mp or sp or adapt")
-
+def init_epic100(base_image_dir):
     with open("annotations/train/epic100.json", "r") as f:
         annos = json.load(f)
 
@@ -37,8 +30,8 @@ def init_epic100(base_image_dir, aff_type):
         label_path = item["gt_path"]
         object = item["noun"]
         if ":" in object:
-            continue
-        label_path = os.path.join(base_image_dir, aff_dir, label_path)
+            object = object.split(":")[0].strip()
+        label_path = os.path.join(base_image_dir, "GT_gaussian", label_path)
         epic_labels_path.append(label_path)
 
         img_path = os.path.join(base_image_dir, item["img_path"])
@@ -72,7 +65,6 @@ class Epic100Dataset(torch.utils.data.Dataset):
         precision: str = "fp32",
         image_size: int = 224,
         data_name="epic100",
-        aff_type="mp",
     ):
         self.samples_per_epoch = samples_per_epoch
 
@@ -94,7 +86,7 @@ class Epic100Dataset(torch.utils.data.Dataset):
         ds = data_name
         self.data_name = data_name
         imgs_path, labels_path, questions, answers = eval("init_{}".format(ds))(
-            self.base_image_dir, aff_type
+            self.base_image_dir
         )
         self.data2list[ds] = (imgs_path, labels_path)
         self.data2texts[ds] = (questions, answers)

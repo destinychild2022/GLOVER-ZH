@@ -30,8 +30,6 @@ def parse_args(args):
     )
     parser.add_argument("--image_path", default="", type=str)
     parser.add_argument("--prompt", default="", type=str)
-    parser.add_argument("--model_path", default="", type=str)
-    parser.add_argument("--model_name", default="", type=str)
     parser.add_argument("--objects", default="", type=str)
     parser.add_argument("--actions", default="", type=str)
 
@@ -303,9 +301,4 @@ def infer(args):
 if __name__ == "__main__":
     args = sys.argv[1:]
     args = parse_args(args)
-    model_path = args.model_path
-    model_name = args.model_name
-    for n in model_name.split(","):
-        version = os.path.join(model_path, n)
-        args.version = version
-        infer(args)
+    infer(args)

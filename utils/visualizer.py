@@ -58,7 +58,7 @@ def draw_affordance_center(rgb, affordance, alpha=0.5):
     aff_map = aff_map.numpy()
 
     aff_map_gt = aff_map * 255.0
-    aff_map_gt = aff_map_gt.numpy().astype(np.uint8)
+    aff_map_gt = aff_map_gt.astype(np.uint8)
 
     heatmap_img = cv2.applyColorMap(aff_map_gt, cv2.COLORMAP_HOT)[:, :, ::-1]
     heatmap_img = cv2.cvtColor(heatmap_img, code=cv2.COLOR_BGR2RGB)

@@ -56,15 +56,6 @@ def parse_args(args):
     parser.add_argument(
         "--use_text_emb_in_suffix_sam", action="store_true", default=False
     )
-    parser.add_argument(
-        "--aff_type",
-        type=str,
-        default="mp",
-        help="""mp/sp/adapt:
-        - mp: using several points to generate affordance
-        - sp: using one point to generate affordance and radius=20
-        - adapt: using one point to generate affordance and radius differs from dataset""",
-    )
     parser.add_argument("--train_firs_mask_decoder", action="store_true", default=False)
     parser.add_argument(
         "--use_diff_lr",
@@ -94,9 +85,9 @@ def parse_args(args):
     parser.add_argument("--log_base_dir", default="./runs", type=str)
     parser.add_argument("--exp_name", default="glover++", type=str)
     parser.add_argument("--epochs", default=10, type=int)
-    parser.add_argument("--steps_per_epoch", default=500, type=int)
+    parser.add_argument("--steps_per_epoch", default=196, type=int)
     parser.add_argument(
-        "--batch_size", default=2, type=int, help="batch size per device per step"
+        "--batch_size", default=32, type=int, help="batch size per device per step"
     )
     parser.add_argument(
         "--grad_accumulation_steps",
@@ -290,7 +281,6 @@ def main(args):
         image_size=args.image_size,
         dataset=args.dataset,
         sample_rate=[float(x) for x in args.sample_rates.split(",")],
-        aff_type=args.aff_type,
     )
     print(f"Training with {len(train_dataset)} examples.")
 

@@ -17,16 +17,7 @@ from model.segment_anything.utils.transforms import ResizeLongestSide
 from .utils import ANSWER_LIST, SHORT_QUESTION_LIST
 
 
-def init_ego4d(base_image_dir, aff_type):
-    if aff_type == "mp":
-        aff_dir = "GT_gaussian"
-    elif aff_type == "sp":
-        aff_dir = "GT_gaussian_sp"
-    elif aff_type == "adapt":
-        aff_dir = "GT_gaussian_sp_70"
-    else:
-        raise ValueError("Ego4d: aff_type should be mp or sp or adapt")
-
+def init_ego4d(base_image_dir):
     with open("annotations/train/ego4d.json", "r") as f:
         ego4d_annos = json.load(f)
 
@@ -36,10 +27,10 @@ def init_ego4d(base_image_dir, aff_type):
     ego4d_images = []
 
     for item in ego4d_annos:
-        label = os.path.join(base_image_dir, aff_dir, item["gt_path"])
+        label = os.path.join(base_image_dir, "GT_gaussian", item["gt_path"])
         ego4d_labels.append(label)
 
-        image = os.path.join(base_image_dir, "frames_copy", item["img_path"] + ".jpg")
+        image = os.path.join(base_image_dir, "frames", item["img_path"] + ".jpg")
         ego4d_images.append(image)
 
         object = item["noun"]
@@ -84,7 +75,6 @@ class Ego4DDataset(torch.utils.data.Dataset):
         precision: str = "fp32",
         image_size: int = 224,
         data_name="ego4d",
-        aff_type="mp",
     ):
         self.samples_per_epoch = samples_per_epoch
 
@@ -104,7 +94,7 @@ class Ego4DDataset(torch.utils.data.Dataset):
         ds = data_name
         self.data_name = data_name
         images, labels, questions, answers = eval("init_{}".format(ds))(
-            self.base_image_dir, aff_type
+            self.base_image_dir
         )
 
         for img in images:

@@ -153,7 +153,6 @@ class HybridDataset(torch.utils.data.Dataset):
         image_size: int = 224,
         dataset="3doi||ego4d||epic100||handal",
         sample_rate=[9, 3, 3, 1],
-        aff_type="mp",
     ):
         self.samples_per_epoch = samples_per_epoch
         sample_rate = np.array(sample_rate)
@@ -178,7 +177,6 @@ class HybridDataset(torch.utils.data.Dataset):
                         precision,
                         image_size,
                         data_name="3doi",
-                        aff_type=aff_type,
                     )
                 )
 
@@ -192,7 +190,6 @@ class HybridDataset(torch.utils.data.Dataset):
                         precision,
                         image_size,
                         data_name="ego4d",
-                        aff_type=aff_type,
                     )
                 )
 
@@ -206,7 +203,6 @@ class HybridDataset(torch.utils.data.Dataset):
                         precision,
                         image_size,
                         data_name="epic100",
-                        aff_type=aff_type,
                     )
                 )
 
@@ -220,7 +216,6 @@ class HybridDataset(torch.utils.data.Dataset):
                         precision,
                         image_size,
                         data_name="handal",
-                        aff_type=aff_type,
                     )
                 )
 

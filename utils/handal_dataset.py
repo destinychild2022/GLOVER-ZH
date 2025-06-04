@@ -17,16 +17,7 @@ from model.segment_anything.utils.transforms import ResizeLongestSide
 from .utils import ANSWER_LIST, SHORT_QUESTION_LIST
 
 
-def init_handal(base_image_dir, aff_type):
-    if aff_type == "mp":
-        aff_dir = "GT_gaussian_train"
-    elif aff_type == "sp":
-        aff_dir = "GT_gaussian_train_sp"
-    elif aff_type == "adapt":
-        aff_dir = "GT_gaussian_train_sp_50"
-    else:
-        raise ValueError("handal: aff_type should be mp or sp or adapt")
-
+def init_handal(base_image_dir):
     with open("annotations/train/handal.json", "r") as f:
         handal_annos = json.load(f)
 
@@ -36,7 +27,9 @@ def init_handal(base_image_dir, aff_type):
     handal_images = []
 
     for item in handal_annos:
-        label = os.path.join(base_image_dir, "annotations", aff_dir, item["gt_path"])
+        label = os.path.join(
+            base_image_dir, "annotations", "GT_gaussian_train", item["gt_path"]
+        )
         handal_labels.append(label)
 
         image = os.path.join(base_image_dir, "images", item["img_path"])
@@ -70,7 +63,6 @@ class HANDALDataset(torch.utils.data.Dataset):
         precision: str = "fp32",
         image_size: int = 224,
         data_name="handal",
-        aff_type="mp",
     ):
         self.samples_per_epoch = samples_per_epoch
 
@@ -90,7 +82,7 @@ class HANDALDataset(torch.utils.data.Dataset):
         ds = data_name
         self.data_name = data_name
         images, labels, questions, answers = eval("init_{}".format(ds))(
-            self.base_image_dir, aff_type
+            self.base_image_dir
         )
         self.data2list[ds] = (images, labels)
         self.data2texts[ds] = (questions, answers)

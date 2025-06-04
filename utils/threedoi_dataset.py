@@ -16,7 +16,7 @@ from .utils import ANSWER_LIST, SHORT_QUESTION_LIST
 import pdb
 
 
-def init_3doi(base_image_dir, aff_type):
+def init_3doi(base_image_dir):
     with open("annotations/train/3doi.json", "r") as f:
         anno_3doi = json.load(f)
 
@@ -58,11 +58,10 @@ class DoiDataset(torch.utils.data.Dataset):
         precision: str = "fp32",
         image_size: int = 224,
         data_name="3doi",
-        aff_type="mp",
     ):
         self.samples_per_epoch = samples_per_epoch
 
-        self.base_image_dir = os.path.join(base_image_dir, "3doi_data")
+        self.base_image_dir = os.path.join(base_image_dir, "3doi")
         self.image_size = image_size
         self.tokenizer = tokenizer
         self.precision = precision
@@ -78,7 +77,7 @@ class DoiDataset(torch.utils.data.Dataset):
         ds = data_name
         self.data_name = data_name
         images_path, labels_path, questions, answers = eval("init_{}".format(ds))(
-            self.base_image_dir, aff_type
+            self.base_image_dir
         )
         self.data2list[ds] = (images_path, labels_path)
         self.data2texts[ds] = (questions, answers)

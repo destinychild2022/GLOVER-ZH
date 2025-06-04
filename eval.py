@@ -79,6 +79,11 @@ def parse_args(args):
         choices=["fp32", "bf16", "fp16"],
         help="precision for inference",
     )
+    parser.add_argument(
+        "--vision-tower",
+        default="/path/to/clip-vit-large-patch14",
+        type=str,
+    )
     parser.add_argument("--image_size", default=1024, type=int, help="image size")
     parser.add_argument("--model_max_length", default=512, type=int)
     parser.add_argument("--lora_r", default=8, type=int)
@@ -90,11 +95,6 @@ def parse_args(args):
     parser.add_argument(
         "--dataset_dir",
         default="/path/to/HOVA-500K/dataset",
-        type=str,
-    )
-    parser.add_argument(
-        "--model_dir",
-        default="/path/to/GLOVER++/model",
         type=str,
     )
     parser.add_argument(
@@ -133,7 +133,7 @@ def preprocess(
 
 
 def add_data(img_paths, gt_paths, mask_part_paths, actions, nouns, root_dir):
-    with open("annotations/test/handal_2000_sp.json", "r") as f:
+    with open("annotations/test/handal.json", "r") as f:
         test_json = json.load(f)
     for item in test_json:
         img_paths.append(
@@ -146,7 +146,7 @@ def add_data(img_paths, gt_paths, mask_part_paths, actions, nouns, root_dir):
         gt_paths.append(
             os.path.join(
                 root_dir,
-                "HANDAL/annotations/GT_gaussian_test_2000_sp",
+                "HANDAL/annotations/GT_gaussian_test",
                 item["gt_path"],
             )
         )
@@ -166,13 +166,11 @@ def add_data(img_paths, gt_paths, mask_part_paths, actions, nouns, root_dir):
         img_paths.append(
             os.path.join(
                 root_dir,
-                "Ego4D/frames_copy",
+                "Ego4D/frames",
                 item["img_path"] + ".jpg",
             )
         )
-        gt_paths.append(
-            os.path.join(root_dir, "Ego4D/GT_gaussian_sp_70", item["gt_path"])
-        )
+        gt_paths.append(os.path.join(root_dir, "Ego4D/GT_gaussian", item["gt_path"]))
         action = item["action"]
         if "(" in action:
             action = action.split("(")[1].split(")")[0].split(",")
@@ -186,7 +184,7 @@ def add_data(img_paths, gt_paths, mask_part_paths, actions, nouns, root_dir):
             noun = noun[0]
         nouns.append(noun)
 
-    with open("annotations/test/epic100_2000.json", "r") as f:
+    with open("annotations/test/epic100.json", "r") as f:
         test_json = json.load(f)
     for item in test_json:
         img_paths.append(
@@ -199,7 +197,7 @@ def add_data(img_paths, gt_paths, mask_part_paths, actions, nouns, root_dir):
         gt_paths.append(
             os.path.join(
                 root_dir,
-                "epic-100/EPIC-KITCHENS_frames/GT_gaussian_sp/test",
+                "epic-100/EPIC-KITCHENS_frames/GT_gaussian/validation",
                 item["gt_path"],
             )
         )

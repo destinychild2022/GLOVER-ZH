@@ -52,15 +52,6 @@ def parse_args(args):
     )
     parser.add_argument("--load_in_8bit", action="store_true", default=False)
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
-    parser.add_argument(
-        "--aff_type",
-        type=str,
-        default="mp",
-        help="""mp/sp/adapt:
-        - mp: using several points to generate affordance
-        - sp: using one point to generate affordance and radius=20
-        - adapt: using one point to generate affordance and radius differs from dataset""",
-    )
     parser.add_argument("--dataset", default="3doi||ego4d||epic100||handal", type=str)
     parser.add_argument("--sample_rates", default="1,1,1,1", type=str)
     parser.add_argument(
@@ -251,7 +242,6 @@ def main(args):
         image_size=args.image_size,
         dataset=args.dataset,
         sample_rate=[float(x) for x in args.sample_rates.split(",")],
-        aff_type=args.aff_type,
     )
     print(f"Training with {len(train_dataset)} examples.")
 

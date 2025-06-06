@@ -22,14 +22,22 @@
 <img src="misc/intro.jpg" width="100%">
 
 ## HOVA-500K Dataset
-1. Download the [HOVA-500K](https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main) dataset, Use the following command to merge the dataset splits into a single .tar.gz file:
+
+* We introduce HOVA-500K, a large-scale affordance-annotated dataset constructed from
+existing human videos and images. The HOVA-500K comprises 500,000 meticulously annotated
+images spanning 1,726 object categories and 675 action categories, creating a comprehensive taxon-
+omy of human-object interactions. 
+
+<img src="misc/hova-500k.png" width="100%">
+
+* Download the [HOVA-500K](https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main) dataset, Use the following command to merge the dataset splits into a single .tar.gz file:
 ```
 cat HANDAL/part_* > HANDAL.tar.gz
 cat Ego4D/part_* > Ego4D.tar.gz
 cat epic-100/part_* > epic-100.tar.gz
 ```
 
-2. Uncompress these .tar.gz files and organize them as follows:
+* Uncompress these .tar.gz files and organize them as follows:
 ```
 ├── HOVA-500K
 │   ├── 3doi
@@ -45,7 +53,8 @@ cat epic-100/part_* > epic-100.tar.gz
 |   │   └── images
 │   └── epic-100
 ```
-The "annotations" files should be put in the same directory as the training code.
+Note: the "annotations" files should be put in the same directory as the training code.
+
 
 ## Installation
 1. Clone the repository:
@@ -106,7 +115,7 @@ NOTE: Key evaluation parameters must be set individually:
 - `--version`: /path/to/GLOVER(++) model
 - `--model_arch`: Choose from 'glover' or 'glover++'
 
-## Inference
+### Inference
 ```
 bash infer.sh
 ```
@@ -131,4 +140,4 @@ If you find this project useful in your research, please consider citing:
 ```
 
 ## Acknowledgement
--  This work is built upon the [LISA++](https://github.com/dvlab-research/LISA/tree/lisa_plus) and [SAM](https://github.com/facebookresearch/segment-anything). 
+-  We would like to thank the [LISA++](https://github.com/dvlab-research/LISA/tree/lisa_plus) and [SAM](https://github.com/facebookresearch/segment-anything) for their contributions. 

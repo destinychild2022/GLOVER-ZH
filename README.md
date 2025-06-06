@@ -1,42 +1,27 @@
 # GLOVER++: Unleashing the Potential of Affordance Learning from Human Behaviors for Robotic Manipulation
+
 [Teli Ma](https://teleema.github.io/)<sup>1*</sup>, [Jia Zheng](https://scholar.google.com/citations?hl=zh-CN&user=wowRHOgAAAAJ)<sup>1*</sup>, [Zifan Wang](https://scholar.google.com/citations?user=GaJXZ-UAAAAJ&hl=en)<sup>1</sup>, [Ziyao Gao](https://scholar.google.com/citations?user=pLJfwc4AAAAJ&hl=en&oi=ao)<sup>1</sup>, [Jiaming Zhou](https://jiaming-zhou.github.io/)<sup>1</sup>, [Junwei Liang](https://junweiliang.me/index.html)<sup>1,2,#</sup>
 
 \*equal contributions, \#corresponding author
 
 <sup>1</sup>HKUST(GZ), <sup>2</sup>HKUST
 
-
-<a href='https://arxiv.org/pdf/2505.11865'><img src='https://img.shields.io/badge/Paper-PDF-red?style=flat&logo=arXiv&logoColor=red' alt='Paper PDF'></a>
+<!-- <a href='https://arxiv.org/pdf/2505.11865'><img src='https://img.shields.io/badge/Paper-PDF-red?style=flat&logo=arXiv&logoColor=red' alt='Paper PDF'></a>
 <a href='https://teleema.github.io/projects/GLOVER++/'><img src='https://img.shields.io/badge/Project-Page-blue?style=flat&logo=Google%20chrome&logoColor=blue' alt='Project Page'></a>
-<a href='https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main'><img src='https://img.shields.io/badge/Dataset-HF-yellow?style=flat&logo=Huggingface&logoColor=yellow' alt='Dataset HF'></a>
+<a href='https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main'><img src='https://img.shields.io/badge/Dataset-HF-yellow?style=flat&logo=Huggingface&logoColor=yellow' alt='Dataset HF'></a> -->
+
+[[🌐 Project Page]](https://teleema.github.io/projects/GLOVER++/)  |  [[📄 GLOVER++ Paper]](https://arxiv.org/pdf/2505.11865) | [[📄 GLOVER Paper]](https://arxiv.org/pdf/2411.12286v2) |  [🤗 Huggingface Data](https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main)  | [[📺 Video]](https://youtu.be/MDQccK681-k)
+
+## Overview
+* GLOVER++ aims to distill actionable affordance knowledge from rich human videos, and demonstrates the effective transfer as an explicit representation for a variety of manipulation tasks.
+* We contribute a large-scale affordance-annotated dataset—HOVA-500K, that provides the necessary scale and diversity to learn generalizable affordance representations. 
+* We present GLOVER++, a global-to-local paradigm of affordance training policy based on HOVA-500K, showing fine-grained affordance representation and generalizable affordance reasoning capability. GLOVER++ achieves state-of-the-art performance in the HOVA-500K evaluation benchmark.
+* Extensive applications in tasks like zero-shot manipulation, multi-task imitation learning, long-horizon and bimanual manipulation demonstrate the huge potential of HOVA-500K and GLOVER++.
 
 
-## Abstract
-Learning manipulation skills from human demonstration videos offers a promising path toward generalizable and interpretable robotic intelligence—particularly through the lens of actionable affordances. However, transferring such knowledge remains challenging due to: 1) a lack of large-scale datasets with precise affordance annotations, and 2) insufficient exploration of affordances in diverse manipulation contexts. To address these gaps, we introduce HOVA-500K, a large-scale, affordance-annotated dataset comprising 500,000 images across 1,726 object categories and 675 actions. We also release a standardized benchmarking suite for multi-modal affordance reasoning. Built upon HOVA-500K, we present GLOVER++, a global-to-local affordance training framework that effectively transfers actionable affordance knowledge from human demonstrations to downstream open-vocabulary reasoning tasks. GLOVER++ achieves state-of-the-art results on the HOVA-500K benchmark and demonstrates strong generalization across diverse downstream robotic manipulation tasks. By explicitly modeling actionable affordances, GLOVER++ facilitates robust transfer across scenes, modalities, and tasks. We hope that HOVA-500K and the GLOVER++ framework will serve as valuable resources for bridging the gap between human demonstrations and robotic manipulation capabilities.
+<img src="misc/intro.jpg" width="100%">
 
-
-## Installation
-1. Clone the repository:
-```bash
-git clone https://github.com/TeleeMa/GLOVER.git
-cd GLOVER
-```
-
-2. Install dependencies: 
-
-We use Python 3.9
-```bash
-pip install -r requirements.txt
-```
-
-3. Download pre-trained models:
-- [LISA Plus 7B model](https://huggingface.co/Senqiao/LISA_Plus_7b) 
-- [CLIP ViT-L/14 model](https://huggingface.co/openai/clip-vit-large-patch14)
-- [SAM ViT-h](https://huggingface.co/HCMUE-Research/SAM-vit-h)
-- Place them in the specified directories and configure the model paths in the training script.
-
-## Training
-### Training Data Preparation
+## HOVA-500K Dataset
 1. Download the [HOVA-500K](https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main) dataset, Use the following command to merge the dataset splits into a single .tar.gz file:
 ```
 cat HANDAL/part_* > HANDAL.tar.gz
@@ -62,7 +47,29 @@ cat epic-100/part_* > epic-100.tar.gz
 ```
 The "annotations" files should be put in the same directory as the training code.
 
-### Training
+## Installation
+1. Clone the repository:
+```bash
+git clone https://github.com/TeleeMa/GLOVER.git
+cd GLOVER
+```
+
+2. Install dependencies: 
+
+We use Python 3.9
+```bash
+pip install -r requirements.txt
+```
+
+3. Download pre-trained models:
+- [LISA Plus 7B model](https://huggingface.co/Senqiao/LISA_Plus_7b) 
+- [CLIP ViT-L/14 model](https://huggingface.co/openai/clip-vit-large-patch14)
+- [SAM ViT-h](https://huggingface.co/HCMUE-Research/SAM-vit-h)
+- Place them in the specified directories and configure the model paths in the training script.
+
+## GLOVER/GLOVER++ Method
+
+### Training 
 Basic training command:
 ```
 bash train_glover.sh

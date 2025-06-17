@@ -10,7 +10,7 @@
 <a href='https://teleema.github.io/projects/GLOVER++/'><img src='https://img.shields.io/badge/Project-Page-blue?style=flat&logo=Google%20chrome&logoColor=blue' alt='Project Page'></a>
 <a href='https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main'><img src='https://img.shields.io/badge/Dataset-HF-yellow?style=flat&logo=Huggingface&logoColor=yellow' alt='Dataset HF'></a> -->
 
-[[🌐 Project Page]](https://teleema.github.io/projects/GLOVER++/)  |  [[📄 GLOVER++ Paper]](https://arxiv.org/pdf/2505.11865) | [[📄 GLOVER Paper]](https://arxiv.org/pdf/2411.12286v2) |  [🤗 Huggingface Data](https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main)  | [[📺 Video]](https://youtu.be/MDQccK681-k)
+[[🌐 Project Page]](https://teleema.github.io/projects/GLOVER++/)  |  [[📄 GLOVER++ Paper]](https://arxiv.org/pdf/2505.11865) | [[📄 GLOVER Paper]](https://arxiv.org/pdf/2411.12286v2) |  [🤗 Huggingface Data](https://huggingface.co/datasets/JiaaZ/HOVA-500K/tree/main)  | [[📺 Video]](https://youtu.be/MDQccK681-k) | [[🤗 Pretrained Weights]](https://huggingface.co/JiaaZ/GLOVER_plus/tree/main)
 
 ## Overview
 * GLOVER++ aims to distill actionable affordance knowledge from rich human videos, and demonstrates the effective transfer as an explicit representation for a variety of manipulation tasks.

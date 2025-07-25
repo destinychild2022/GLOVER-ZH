@@ -17,7 +17,9 @@ import pdb
 
 
 def init_3doi(base_image_dir):
-    with open("annotations/train/3doi.json", "r") as f:
+    # 注释文件在 base_image_dir 的上级目录的 annotations/train/ 中
+    annotations_dir = os.path.join(os.path.dirname(base_image_dir), "annotations/train/3doi.json")
+    with open(annotations_dir, "r") as f:
         anno_3doi = json.load(f)
 
     tdoi_questions = []

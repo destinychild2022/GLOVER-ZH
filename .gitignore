@@ -176,3 +176,12 @@ cython_debug/
 annotations/
 images/
 
+# Test outputs
+extract_affordence/test_episode_output/
+extract_affordence/debug_output/
+*.png
+*.jpg
+*.json
+!misc/*.png
+!misc/*.jpg
+

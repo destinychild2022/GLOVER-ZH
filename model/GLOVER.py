@@ -239,12 +239,12 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
         seg_token_mask = torch.cat(
             [
                 seg_token_mask,
-                torch.zeros((seg_token_mask.shape[0], 1)).bool().cuda(),
+                torch.zeros((seg_token_mask.shape[0], 1)).bool().to(input_ids.device),
             ],
             dim=1,
         )
         seg_token_mask = torch.cat(
-            [torch.zeros((seg_token_mask.shape[0], 255)).bool().cuda(), seg_token_mask],
+            [torch.zeros((seg_token_mask.shape[0], 255)).bool().to(input_ids.device), seg_token_mask],
             dim=1,
         )
 
@@ -293,7 +293,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
                 output_hidden_states=True,
             )
             output_hidden_states = output.hidden_states
-
+        # 3. Affordance decoder部分
         hidden_states = []
 
         assert len(self.model.text_hidden_fcs) == 1
@@ -303,7 +303,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
         seg_token_counts = seg_token_mask.int().sum(-1)
         seg_token_offset = seg_token_counts.cumsum(-1)
         seg_token_offset = torch.cat(
-            [torch.zeros(1).long().cuda(), seg_token_offset], dim=0
+            [torch.zeros(1).long().to(input_ids.device), seg_token_offset], dim=0
         )
         seg_token_offset = seg_token_offset[offset]
 
@@ -315,6 +315,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
 
         multimask_output = False
         pred_masks = []
+        # 4. 送入SAM prompt encoder和mask decoder
         for i in range(len(pred_embeddings)):
             (
                 sparse_embeddings,
@@ -412,7 +413,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
             seg_token_mask = output_ids[:, 1:] == self.seg_token_idx
             seg_token_mask = torch.cat(
                 [
-                    torch.zeros((seg_token_mask.shape[0], 255)).bool().cuda(),
+                    torch.zeros((seg_token_mask.shape[0], 255)).bool().to(input_ids.device),
                     seg_token_mask,
                 ],
                 dim=1,
@@ -429,7 +430,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
             seg_token_counts = seg_token_mask.int().sum(-1)
             seg_token_offset = seg_token_counts.cumsum(-1)
             seg_token_offset = torch.cat(
-                [torch.zeros(1).long().cuda(), seg_token_offset], dim=0
+                [torch.zeros(1).long().to(input_ids.device), seg_token_offset], dim=0
             )
 
             pred_embeddings_ = []

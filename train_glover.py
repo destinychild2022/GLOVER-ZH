@@ -13,6 +13,14 @@ import transformers
 from peft import LoraConfig, get_peft_model
 from torch.utils.tensorboard import SummaryWriter
 
+# 添加swanlab支持
+try:
+    import swanlab
+    SWANLAB_AVAILABLE = True
+except ImportError:
+    SWANLAB_AVAILABLE = False
+    print("Warning: swanlab not available, falling back to tensorboard only")
+
 from model.GLOVER import GloverForCausalLM
 from model.llava import conversation as conversation_lib
 from utils.dataset import HybridDataset, collate_fn
@@ -57,7 +65,7 @@ def parse_args(args):
     parser.add_argument(
         "--dataset_dir", default="/path/to/HOVA-500K/datasets", type=str
     )
-    parser.add_argument("--log_base_dir", default="./runs", type=str)
+    parser.add_argument("--log_base_dir", default="/mnt/data-oss/rap-prod-bak/GLOVER/runs", type=str)
     parser.add_argument("--exp_name", default="glover++", type=str)
     parser.add_argument("--epochs", default=10, type=int)
     parser.add_argument("--steps_per_epoch", default=500, type=int)
@@ -102,11 +110,42 @@ def parse_args(args):
 def main(args):
     args = parse_args(args)
     args.log_dir = os.path.join(args.log_base_dir, args.exp_name)
+    
+    # 初始化日志记录器
     if args.local_rank == 0:
         os.makedirs(args.log_dir, exist_ok=True)
+        
+        # 保留tensorboard
         writer = SummaryWriter(args.log_dir)
+        
+        # 初始化swanlab（如果可用）
+        swanlab_run = None
+        if SWANLAB_AVAILABLE:
+            try:
+                swanlab_run = swanlab.init(
+                    experiment_name=args.exp_name,
+                    config={
+                        "version": args.version,
+                        "vision_tower": args.vision_tower,
+                        "dataset": args.dataset,
+                        "lr": args.lr,
+                        "epochs": args.epochs,
+                        "batch_size": args.batch_size,
+                        "steps_per_epoch": args.steps_per_epoch,
+                        "ce_loss_weight": args.ce_loss_weight,
+                        "precision": args.precision,
+                        "lora_r": args.lora_r,
+                        "lora_alpha": args.lora_alpha,
+                        "lora_dropout": args.lora_dropout,
+                    }
+                )
+                print(f"SwanLab experiment initialized successfully")
+            except Exception as e:
+                print(f"Warning: Failed to initialize SwanLab: {e}")
+                swanlab_run = None
     else:
         writer = None
+        swanlab_run = None
 
     # Create model
     tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -327,6 +366,7 @@ def main(args):
             epoch,
             scheduler,
             writer,
+            swanlab_run,
             train_iter,
             args,
         )
@@ -352,6 +392,7 @@ def train(
     epoch,
     scheduler,
     writer,
+    swanlab_run,
     train_iter,
     args,
 ):
@@ -428,6 +469,8 @@ def train(
 
             if args.local_rank == 0:
                 progress.display(global_step + 1)
+                
+                # TensorBoard记录
                 writer.add_scalar(
                     "train/loss", losses.avg, global_step + epoch * args.steps_per_epoch
                 )
@@ -456,6 +499,22 @@ def train(
                     data_time.avg,
                     global_step + epoch * args.steps_per_epoch,
                 )
+                
+                # SwanLab记录（如果可用）
+                if swanlab_run is not None:
+                    try:
+                        swanlab.log({
+                            "train/loss": losses.avg,
+                            "train/ce_loss": ce_losses.avg,
+                            "train/mask_loss": mask_losses.avg,
+                            "train/kl_loss": kl_losses.avg,
+                            "metrics/total_secs_per_batch": batch_time.avg,
+                            "metrics/data_secs_per_batch": data_time.avg,
+                            "epoch": epoch,
+                            "global_step": global_step + epoch * args.steps_per_epoch,
+                        })
+                    except Exception as e:
+                        print(f"Warning: Failed to log to SwanLab: {e}")
 
             batch_time.reset()
             data_time.reset()
@@ -467,9 +526,19 @@ def train(
         if global_step != 0:
             curr_lr = scheduler.get_last_lr()
             if args.local_rank == 0:
+                # TensorBoard记录学习率
                 writer.add_scalar(
                     "train/lr", curr_lr[0], global_step + epoch * args.steps_per_epoch
                 )
+                
+                # SwanLab记录学习率（如果可用）
+                if swanlab_run is not None:
+                    try:
+                        swanlab.log({
+                            "train/lr": curr_lr[0],
+                        })
+                    except Exception as e:
+                        print(f"Warning: Failed to log learning rate to SwanLab: {e}")
 
     return train_iter
 

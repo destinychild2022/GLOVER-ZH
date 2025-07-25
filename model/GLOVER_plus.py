@@ -243,12 +243,12 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
         seg_token_mask = torch.cat(
             [
                 seg_token_mask,
-                torch.zeros((seg_token_mask.shape[0], 1)).bool().cuda(),
+                torch.zeros((seg_token_mask.shape[0], 1)).bool().to(input_ids.device),
             ],
             dim=1,
         )
         seg_token_mask = torch.cat(
-            [torch.zeros((seg_token_mask.shape[0], 255)).bool().cuda(), seg_token_mask],
+            [torch.zeros((seg_token_mask.shape[0], 255)).bool().to(input_ids.device), seg_token_mask],
             dim=1,
         )
 
@@ -310,7 +310,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
 
         seg_token_offset = seg_token_counts.cumsum(-1)
         seg_token_offset = torch.cat(
-            [torch.zeros(1).long().cuda(), seg_token_offset], dim=0
+            [torch.zeros(1).long().to(input_ids.device), seg_token_offset], dim=0
         )
         seg_token_offset = seg_token_offset[offset]
 
@@ -429,21 +429,49 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
         use_text_emb_in_suffix_sam: bool = False,
     ):
         with torch.no_grad():
-            outputs, _ = self.generate(
-                images=images_clip,
-                input_ids=input_ids,
-                max_new_tokens=max_new_tokens,
-                num_beams=1,
-                output_hidden_states=True,
-                return_dict_in_generate=True,
-            )
-            output_hidden_states = outputs.hidden_states[-1]
-            output_ids = outputs.sequences
+            try:
+                # Use the parent class generate method with correct parameters
+                outputs = super().generate(
+                    input_ids=input_ids,
+                    images=images_clip,
+                    max_new_tokens=max_new_tokens,
+                    num_beams=1,
+                    output_hidden_states=True,
+                    return_dict_in_generate=True,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id if tokenizer else None,
+                    eos_token_id=tokenizer.eos_token_id if tokenizer else None,
+                )
+                
+                # Debug: check what outputs contains
+                print(f"Debug: outputs type: {type(outputs)}")
+                if hasattr(outputs, '__dict__'):
+                    print(f"Debug: outputs attributes: {list(outputs.__dict__.keys())}")
+                
+                # Check if outputs has hidden_states attribute
+                if not hasattr(outputs, 'hidden_states'):
+                    print(f"Error: outputs does not have hidden_states attribute. outputs: {outputs}")
+                    # Try to handle the case where outputs might be a string or different format
+                    if isinstance(outputs, str):
+                        print("Error: generate method returned a string instead of expected object")
+                        return None, []
+                    else:
+                        print(f"Error: unexpected outputs format: {type(outputs)}")
+                        return None, []
+                
+                output_hidden_states = outputs.hidden_states[-1]
+                output_ids = outputs.sequences
+                
+            except Exception as e:
+                print(f"Error in generate method: {e}")
+                import traceback
+                traceback.print_exc()
+                return None, []
 
             seg_token_mask = output_ids[:, 1:] == self.seg_token_idx
             seg_token_mask = torch.cat(
                 [
-                    torch.zeros((seg_token_mask.shape[0], 255)).bool().cuda(),
+                    torch.zeros((seg_token_mask.shape[0], 255)).bool().to(input_ids.device),
                     seg_token_mask,
                 ],
                 dim=1,
@@ -460,7 +488,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
             seg_token_counts = seg_token_mask.int().sum(-1)
             seg_token_offset = seg_token_counts.cumsum(-1)
             seg_token_offset = torch.cat(
-                [torch.zeros(1).long().cuda(), seg_token_offset], dim=0
+                [torch.zeros(1).long().to(input_ids.device), seg_token_offset], dim=0
             )
 
             pred_embeddings_ = []

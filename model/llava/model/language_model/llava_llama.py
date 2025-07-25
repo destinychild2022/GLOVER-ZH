@@ -153,5 +153,22 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         return model_inputs
 
 
-AutoConfig.register("llava", LlavaConfig)
+# 更安全的配置注册
+try:
+    # 检查是否已经注册了llava配置
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    if "llava" in CONFIG_MAPPING:
+        # 配置已存在，检查是否需要替换
+        existing_config = CONFIG_MAPPING["llava"]
+        if existing_config != LlavaConfig:
+            print("Warning: llava config already registered with different class")
+            print(f"Existing: {existing_config}")
+            print(f"Current: {LlavaConfig}")
+    else:
+        print("配置不存在，使用自定义")
+        AutoConfig.register("llava", LlavaConfig)
+except Exception as e:
+    print(f"Warning: Failed to register llava config: {e}")
+    # 继续执行，不中断程序
+
 AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)

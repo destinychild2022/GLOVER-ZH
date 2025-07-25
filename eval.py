@@ -272,7 +272,7 @@ def main(args):
     vision_tower.to(dtype=torch_dtype)
 
     if args.precision == "bf16":
-        model = model.bfloat16().cuda()
+        model = model.bfloat16().to(f"cuda:{args.local_rank}")
     elif (
         args.precision == "fp16" and (not args.load_in_4bit) and (not args.load_in_8bit)
     ):
@@ -287,9 +287,9 @@ def main(args):
             replace_method="auto",
         )
         model = model_engine.module
-        model.model.vision_tower = vision_tower.half().cuda()
+        model.model.vision_tower = vision_tower.half().to(f"cuda:{args.local_rank}")
     elif args.precision == "fp32":
-        model = model.float().cuda()
+        model = model.float().to(f"cuda:{args.local_rank}")
 
     vision_tower = model.get_model().get_vision_tower()
     vision_tower.to(device=args.local_rank)
@@ -347,7 +347,7 @@ def main(args):
                 "pixel_values"
             ][0]
             .unsqueeze(0)
-            .cuda()
+            .to(f"cuda:{args.local_rank}")
         )
         if args.precision == "bf16":
             image_clip = image_clip.bfloat16()
@@ -362,7 +362,7 @@ def main(args):
         image = (
             preprocess(torch.from_numpy(image).permute(2, 0, 1).contiguous())
             .unsqueeze(0)
-            .cuda()
+            .to(f"cuda:{args.local_rank}")
         )
         if args.precision == "bf16":
             image = image.bfloat16()
@@ -372,7 +372,7 @@ def main(args):
             image = image.float()
 
         input_ids = tokenizer_image_token(prompt, tokenizer, return_tensors="pt")
-        input_ids = input_ids.unsqueeze(0).cuda()
+        input_ids = input_ids.unsqueeze(0).to(f"cuda:{args.local_rank}")
 
         output_ids, pred_masks = model.evaluate(
             image_clip,

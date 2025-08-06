@@ -199,12 +199,80 @@ class GLOVERAffordanceExtractor:
                 return (int(intrinsics['cx']), int(intrinsics['cy']))
             
             point_image = self.camera_to_image(point_camera, camera_name)
-            return point_image
+            
+            # 根据相机类型设置图像尺寸
+            if camera_name == 'head':
+                max_width, max_height = 1280, 720
+            else:  # hand_left, hand_right
+                max_width, max_height = 848, 480
+            
+            x, y = point_image
+            
+            # 检查是否在视野范围内
+            in_fov = (0 <= x < max_width) and (0 <= y < max_height)
+            
+            if not in_fov:
+                print(f"警告: 点 {point_3d} 超出 {camera_name} 相机视野范围")
+                # 返回图像中心作为fallback
+                return (max_width // 2, max_height // 2)
+            
+            return (x, y)
             
         except Exception as e:
             print(f"投影失败: {e}")
             intrinsics = self.camera_intrinsics[camera_name]
             return (int(intrinsics['cx']), int(intrinsics['cy']))
+    
+    def select_best_camera(self, point_3d: np.ndarray) -> str:
+        """选择最佳相机视角"""
+        best_camera = None
+        best_score = float('inf')
+        
+        for camera_name in ['head', 'hand_left', 'hand_right']:
+            try:
+                point_camera = self.world_to_camera(point_3d, camera_name)
+                
+                # 检查点是否在相机前方
+                if point_camera[2] <= 0:
+                    continue
+                
+                # 投影到图像坐标
+                point_image = self.camera_to_image(point_camera, camera_name)
+                x, y = point_image
+                
+                # 设置图像尺寸
+                if camera_name == 'head':
+                    max_width, max_height = 1280, 720
+                else:
+                    max_width, max_height = 848, 480
+                
+                # 计算视野内得分
+                if 0 <= x < max_width and 0 <= y < max_height:
+                    # 计算距离图像中心的距离（越小越好）
+                    center_x, center_y = max_width // 2, max_height // 2
+                    distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+                    
+                    # 考虑相机Z距离（越近越好）
+                    z_distance = point_camera[2]
+                    
+                    # 综合得分（距离中心越近，Z距离越近，得分越低）
+                    score = distance + z_distance * 0.1
+                    
+                    if score < best_score:
+                        best_score = score
+                        best_camera = camera_name
+                
+            except Exception as e:
+                print(f"选择相机时出错 {camera_name}: {e}")
+                continue
+        
+        return best_camera or 'head'  # 默认使用head相机
+    
+    def project_3d_to_2d_smart(self, point_3d: np.ndarray) -> Tuple[str, Tuple[int, int]]:
+        """智能投影：选择最佳相机并投影"""
+        best_camera = self.select_best_camera(point_3d)
+        projected_point = self.project_3d_to_2d(point_3d, best_camera)
+        return best_camera, projected_point
     
     def create_affordance_mask(self, image_shape: Tuple[int, int], 
                               affordance_point: Tuple[int, int], 
@@ -436,28 +504,38 @@ class GLOVERAffordanceExtractor:
                     # 将3D位姿投影到2D图像坐标
                     affordance_point = self.project_3d_to_2d(position, camera_name)
                     
-                    # 创建affordance掩码
-                    affordance_mask = self.create_affordance_mask(
-                        rgb_image.shape[:2], affordance_point
-                    )
+                    # 检查投影是否有效（在图像范围内）
+                    if camera_name == 'head':
+                        max_width, max_height = 1280, 720
+                    else:
+                        max_width, max_height = 848, 480
                     
-                    # 生成问题和答案
-                    question, answer = self.generate_question_answer("object")
-                    
-                    affordance = GLOVERAffordanceData(
-                        episode_id=episode_id,
-                        task_id=task_id,
-                        timestamp=timestamp,
-                        end_effector_position=position,
-                        end_effector_orientation=orientation,
-                        rgb_image=rgb_image,
-                        affordance_mask=affordance_mask,
-                        affordance_point=affordance_point,
-                        object_name="object",
-                        question=question,
-                        answer=answer
-                    )
-                    affordance_data.append(affordance)
+                    x, y = affordance_point
+                    if 0 <= x < max_width and 0 <= y < max_height:
+                        # 创建affordance掩码
+                        affordance_mask = self.create_affordance_mask(
+                            rgb_image.shape[:2], affordance_point
+                        )
+                        
+                        # 生成问题和答案
+                        question, answer = self.generate_question_answer("object")
+                        
+                        affordance = GLOVERAffordanceData(
+                            episode_id=episode_id,
+                            task_id=task_id,
+                            timestamp=timestamp,
+                            end_effector_position=position,
+                            end_effector_orientation=orientation,
+                            rgb_image=rgb_image,
+                            affordance_mask=affordance_mask,
+                            affordance_point=affordance_point,
+                            object_name="object",
+                            question=question,
+                            answer=answer
+                        )
+                        affordance_data.append(affordance)
+                    else:
+                        print(f"    - 跳过 {camera_name} 相机：投影点 ({x}, {y}) 超出图像范围")
                 else:
                     print(f"    - 未找到 {camera_name} 图像在 {camera_image_dir}")
         

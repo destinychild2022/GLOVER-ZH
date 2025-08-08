@@ -34,6 +34,7 @@ class GraspMomentData:
     pre_grasp_image: np.ndarray  # 抓取前的图像
     stable_close_image: np.ndarray  # 稳定闭合后的图像
     head_camera_image: np.ndarray  # 头部相机图像
+    first_frame_head_image: np.ndarray  # 第一帧的头部相机图像
     affordance_mask: np.ndarray  # (H, W) binary mask
     affordance_point: Tuple[int, int]  # (x, y) pixel coordinates
     camera_name: str  # 使用的相机名称
@@ -76,7 +77,7 @@ class GraspMomentExtractor:
         if not param_dir.exists():
             print(f"相机参数目录不存在: {param_dir}")
             print("使用默认相机参数")
-            self.setup_default_camera_parameters()
+            # self.setup_default_camera_parameters()
             return
         
         print(f"找到相机参数目录: {param_dir}")
@@ -296,105 +297,115 @@ class GraspMomentExtractor:
         return mask
     
     def detect_grasp_moments(self, h5_data: Dict) -> List[Dict]:
-        """检测夹爪闭合时刻（position从接近0到接近1）"""
+        """检测夹爪闭合时刻（使用state/left_effector和state/right_effector的position数据）"""
         if 'end_position' not in h5_data:
             return []
         
+        # 检查是否有夹爪状态数据
+        if 'left_effector_position' not in h5_data or 'right_effector_position' not in h5_data:
+            print("  - 缺少夹爪状态数据，无法检测抓取时刻")
+            return []
+        
+        left_effector_pos = h5_data['left_effector_position']  # (T,)
+        right_effector_pos = h5_data['right_effector_position']  # (T,)
         positions = h5_data['end_position']  # (T, 2, 3)
         
-        # 分析左右手的位置变化
-        left_hand_positions = positions[:, 0, :]  # (T, 3)
-        right_hand_positions = positions[:, 1, :]  # (T, 3)
-        
-        # 计算夹爪开合状态（通过末端执行器之间的距离来判断）
-        gripper_distances = np.linalg.norm(left_hand_positions - right_hand_positions, axis=1)
-        
-        # 计算夹爪状态的变化
-        gripper_changes = np.diff(gripper_distances)
-        
-        # 检测夹爪闭合时刻（距离突然减小）
-        close_threshold = np.percentile(gripper_changes, 15)  # 取15%分位数作为闭合阈值
-        
-        grasp_moments = []
+        print(f"  - 夹爪位置数据范围:")
+        print(f"    左手夹爪: {left_effector_pos.min():.1f} - {left_effector_pos.max():.1f}")
+        print(f"    右手夹爪: {right_effector_pos.min():.1f} - {right_effector_pos.max():.1f}")
         
         # 检测夹爪闭合时刻
-        for i, change in enumerate(gripper_changes):
-            if change < close_threshold:  # 距离突然减小，表示夹爪闭合
-                grasp_moments.append(i + 1)  # +1因为diff后索引偏移
+        grasp_moments = []
         
-        # 去重并排序
-        grasp_moments = sorted(list(set(grasp_moments)))
+        # 检测左手夹爪闭合
+        left_grasp_moments = self._detect_effector_grasp(left_effector_pos, 'left', h5_data)
+        for moment in left_grasp_moments:
+            moment['grasping_arm'] = 'left'
+            moment['camera_name'] = 'hand_left'
+            moment['position'] = positions[moment['grasp_idx']][0]  # 左手位置
+            moment['orientation'] = h5_data['end_orientation'][moment['grasp_idx']][0]  # 左手方向
+            grasp_moments.append(moment)
         
-        # 过滤太近的时刻（至少间隔20帧）
+        # 检测右手夹爪闭合
+        right_grasp_moments = self._detect_effector_grasp(right_effector_pos, 'right', h5_data)
+        for moment in right_grasp_moments:
+            moment['grasping_arm'] = 'right'
+            moment['camera_name'] = 'hand_right'
+            moment['position'] = positions[moment['grasp_idx']][1]  # 右手位置
+            moment['orientation'] = h5_data['end_orientation'][moment['grasp_idx']][1]  # 右手方向
+            grasp_moments.append(moment)
+        
+        # 按时间戳排序
+        grasp_moments.sort(key=lambda x: x['grasp_timestamp'])
+        
+        # 去重并过滤太近的时刻（至少间隔20帧）
         if grasp_moments:
             filtered_moments = [grasp_moments[0]]
             for i in range(1, len(grasp_moments)):
-                if grasp_moments[i] - grasp_moments[i-1] > 20:  # 至少间隔20帧
+                if grasp_moments[i]['grasp_idx'] - grasp_moments[i-1]['grasp_idx'] > 20:  # 至少间隔20帧
                     filtered_moments.append(grasp_moments[i])
             grasp_moments = filtered_moments
         
-        # 为每个抓取时刻确定详细信息
-        grasp_details = []
-        for grasp_idx in grasp_moments:
-            if grasp_idx >= len(positions):
-                continue
-            
-            # 分析是左臂还是右臂在抓取
-            # 通过比较左右手的位置变化来判断
-            left_velocity = np.linalg.norm(np.diff(left_hand_positions[max(0, grasp_idx-5):grasp_idx+1], axis=0), axis=1)
-            right_velocity = np.linalg.norm(np.diff(right_hand_positions[max(0, grasp_idx-5):grasp_idx+1], axis=0), axis=1)
-            
-            # 计算平均速度
-            left_avg_velocity = np.mean(left_velocity) if len(left_velocity) > 0 else 0
-            right_avg_velocity = np.mean(right_velocity) if len(right_velocity) > 0 else 0
-            
-            # 判断哪个手臂在抓取（速度更大的那个）
-            if left_avg_velocity > right_avg_velocity:
-                grasping_arm = 'left'
-                camera_name = 'hand_left'
-                position = left_hand_positions[grasp_idx]
-                orientation = h5_data['end_orientation'][grasp_idx][0]  # 左手
-            else:
-                grasping_arm = 'right'
-                camera_name = 'hand_right'
-                position = right_hand_positions[grasp_idx]
-                orientation = h5_data['end_orientation'][grasp_idx][1]  # 右手
-            
-            # 寻找抓取前的时刻（距离较大的时刻）
-            pre_grasp_idx = grasp_idx
-            for i in range(grasp_idx-1, max(0, grasp_idx-20), -1):
-                if gripper_distances[i] > gripper_distances[grasp_idx] * 1.2:  # 距离明显更大
-                    pre_grasp_idx = i
-                    break
-            
-            # 寻找稳定闭合后的时刻（延后几帧，确保夹爪稳定闭合）
-            stable_close_idx = grasp_idx
-            for i in range(grasp_idx+1, min(len(gripper_distances), grasp_idx+15)):
-                # 检查后续几帧的距离是否稳定在较小值
-                if (gripper_distances[i] < gripper_distances[grasp_idx] * 0.9 and 
-                    abs(gripper_distances[i] - gripper_distances[i-1]) < 0.01):  # 距离稳定且较小
-                    stable_close_idx = i
-                    break
-            
-            grasp_details.append({
-                'grasp_idx': grasp_idx,
-                'pre_grasp_idx': pre_grasp_idx,
-                'stable_close_idx': stable_close_idx,
-                'grasping_arm': grasping_arm,
-                'camera_name': camera_name,
-                'position': position,
-                'orientation': orientation,
-                'grasp_timestamp': h5_data['timestamp'][grasp_idx],
-                'pre_grasp_timestamp': h5_data['timestamp'][pre_grasp_idx],
-                'stable_close_timestamp': h5_data['timestamp'][stable_close_idx]
-            })
-        
-        print(f"  - 检测到 {len(grasp_details)} 个夹爪闭合时刻")
-        for i, detail in enumerate(grasp_details):
+        print(f"  - 检测到 {len(grasp_moments)} 个夹爪闭合时刻")
+        for i, detail in enumerate(grasp_moments):
             print(f"    - 时刻 {i+1}: {detail['grasping_arm']}臂抓取, 相机: {detail['camera_name']}, "
                   f"抓取前: {detail['pre_grasp_idx']}, 抓取时: {detail['grasp_idx']}, 稳定闭合: {detail['stable_close_idx']}")
         
-        return grasp_details
+        return grasp_moments
+    
+    def _detect_effector_grasp(self, effector_pos: np.ndarray, arm_name: str, h5_data: Dict) -> List[Dict]:
+        """检测单个夹爪的闭合时刻"""
+        grasp_moments = []
+        
+        # 确保effector_pos是一维数组
+        if effector_pos.ndim > 1:
+            effector_pos = effector_pos.squeeze()
+        
+        # 计算夹爪位置的变化
+        effector_changes = np.diff(effector_pos)
+        
+        # 检查是否有足够的数据
+        if len(effector_changes) == 0:
+            print(f"  - 警告: {arm_name}夹爪数据不足，无法检测抓取时刻")
+            return grasp_moments
+        
+        # 检测夹爪闭合时刻（位置从接近0变化到100多）
+        # 寻找位置突然增大的时刻
+        close_threshold = np.percentile(effector_changes, 85)  # 取85%分位数作为闭合阈值
+        
+        for i, change in enumerate(effector_changes):
+            if change > close_threshold and effector_pos[i+1] > 80:  # 位置突然增大且大于80
+                grasp_idx = i + 1  # +1因为diff后索引偏移
+                
+                # 寻找抓取前的时刻（位置接近0的时刻）
+                pre_grasp_idx = grasp_idx
+                for j in range(grasp_idx-1, max(0, grasp_idx-30), -1):
+                    if effector_pos[j] < 10:  # 位置接近0
+                        pre_grasp_idx = j
+                        break
+                
+                # 寻找稳定闭合后的时刻（延后几帧，确保夹爪稳定闭合）
+                stable_close_idx = grasp_idx
+                for j in range(grasp_idx+1, min(len(effector_pos), grasp_idx+20)):
+                    # 检查后续几帧的位置是否稳定在较大值
+                    if (effector_pos[j] > 80 and 
+                        abs(effector_pos[j] - effector_pos[j-1]) < 5):  # 位置稳定且较大
+                        stable_close_idx = j
+                        break
+                
+                grasp_moments.append({
+                    'grasp_idx': grasp_idx,
+                    'pre_grasp_idx': pre_grasp_idx,
+                    'stable_close_idx': stable_close_idx,
+                    'grasp_timestamp': h5_data['timestamp'][grasp_idx],
+                    'pre_grasp_timestamp': h5_data['timestamp'][pre_grasp_idx],
+                    'stable_close_timestamp': h5_data['timestamp'][stable_close_idx],
+                    'effector_position_at_grasp': effector_pos[grasp_idx],
+                    'effector_position_pre_grasp': effector_pos[pre_grasp_idx],
+                    'effector_position_stable_close': effector_pos[stable_close_idx]
+                })
+        
+        return grasp_moments
     
     def load_h5_data(self, trial_data_root_dir: Path) -> Optional[Dict]:
         """加载H5文件中的机械臂数据"""
@@ -407,17 +418,69 @@ class GraspMomentExtractor:
         
         try:
             with h5py.File(h5_file, 'r') as f:
-                data = {
-                    'end_position': f['action']['end']['position'][:],
-                    'end_orientation': f['action']['end']['orientation'][:],
-                    'timestamp': f['timestamp'][:]
-                }
+                data = {}
                 
-                if 'joint' in f['action']:
-                    data['joint_positions'] = f['action']['joint']['position'][:]
-                    data['joint_velocities'] = f['action']['joint']['velocity'][:]
+                # 检查是否有state数据
+                if 'state' not in f:
+                    print(f"  - 错误: 未找到state数据")
+                    return None
                 
-                print(f"  - 成功加载H5数据: end_position={data['end_position'].shape}")
+                # 加载机器人基准位置
+                if 'robot' in f['state'] and 'position' in f['state']['robot']:
+                    robot_position = f['state']['robot']['position'][:]  # (T, 3)
+                    print(f"  - 加载机器人基准位置: {robot_position.shape}")
+                else:
+                    print(f"  - 警告: 未找到机器人基准位置，使用零向量")
+                    robot_position = np.zeros((f['timestamp'].shape[0], 3))
+                
+                # 加载末端执行器位置（相对于机器人基准位置）
+                if 'end' in f['state'] and 'position' in f['state']['end']:
+                    end_position_raw = f['state']['end']['position'][:]  # (T, 2, 3)
+                    # 减去机器人基准位置
+                    end_position_relative = end_position_raw - robot_position[:, np.newaxis, :]
+                    data['end_position'] = end_position_relative
+                    print(f"  - 加载末端执行器位置（相对坐标）: {data['end_position'].shape}")
+                    print(f"  - 位置范围: {data['end_position'].min():.3f} - {data['end_position'].max():.3f} 米")
+                else:
+                    print(f"  - 错误: 未找到末端执行器位置数据")
+                    return None
+                
+                # 加载末端执行器方向
+                if 'end' in f['state'] and 'orientation' in f['state']['end']:
+                    data['end_orientation'] = f['state']['end']['orientation'][:]
+                    print(f"  - 加载末端执行器方向: {data['end_orientation'].shape}")
+                else:
+                    print(f"  - 警告: 未找到末端执行器方向数据")
+                    data['end_orientation'] = None
+                
+                # 加载夹爪状态数据
+                if 'left_effector' in f['state'] and 'position' in f['state']['left_effector']:
+                    data['left_effector_position'] = f['state']['left_effector']['position'][:]
+                    print(f"  - 加载左手夹爪位置数据: {data['left_effector_position'].shape}")
+                    print(f"  - 左手夹爪范围: {data['left_effector_position'].min():.1f} - {data['left_effector_position'].max():.1f}")
+                else:
+                    print(f"  - 警告: 未找到左手夹爪位置数据")
+                
+                if 'right_effector' in f['state'] and 'position' in f['state']['right_effector']:
+                    data['right_effector_position'] = f['state']['right_effector']['position'][:]
+                    print(f"  - 加载右手夹爪位置数据: {data['right_effector_position'].shape}")
+                    print(f"  - 右手夹爪范围: {data['right_effector_position'].min():.1f} - {data['right_effector_position'].max():.1f}")
+                else:
+                    print(f"  - 警告: 未找到右手夹爪位置数据")
+                
+                # 加载关节数据（如果存在）
+                if 'joint' in f['state']:
+                    if 'position' in f['state']['joint']:
+                        data['joint_positions'] = f['state']['joint']['position'][:]
+                        print(f"  - 加载关节位置: {data['joint_positions'].shape}")
+                    if 'velocity' in f['state']['joint']:
+                        data['joint_velocities'] = f['state']['joint']['velocity'][:]
+                        print(f"  - 加载关节速度: {data['joint_velocities'].shape}")
+                
+                # 加载时间戳
+                data['timestamp'] = f['timestamp'][:]
+                print(f"  - 加载时间戳: {data['timestamp'].shape}")
+                
                 return data
                 
         except Exception as e:
@@ -504,6 +567,9 @@ class GraspMomentExtractor:
             # 加载头部相机图像
             head_camera_image = self.load_camera_image(trial_data_root_dir / "camera" / str(stable_close_idx), 'head')
             
+            # 加载第一帧的head图像作为抓取前图像
+            first_frame_head_image = self.load_camera_image(trial_data_root_dir / "camera" / "0", 'head')
+            
             if pre_grasp_image is None or stable_close_image is None:
                 print(f"    - 跳过抓取时刻 {grasp_idx}: 缺少图像")
                 continue
@@ -536,6 +602,7 @@ class GraspMomentExtractor:
                     pre_grasp_image=pre_grasp_image,
                     stable_close_image=stable_close_image,
                     head_camera_image=head_camera_image,
+                    first_frame_head_image=first_frame_head_image,
                     affordance_mask=affordance_mask,
                     affordance_point=affordance_point,
                     camera_name=best_camera,
@@ -562,7 +629,7 @@ class GraspMomentExtractor:
             episodes[data.episode_id].append(data)
         
         for episode_id, episode_data in episodes.items():
-            # 创建大图 - 3行：抓取前、抓取后、头部相机
+            # 创建大图 - 3行：机械臂视角闭合图、头部视角闭合图、第一帧头部图像
             num_moments = len(episode_data)
             fig, axes = plt.subplots(3, num_moments, figsize=(5*num_moments, 15))
             
@@ -570,35 +637,40 @@ class GraspMomentExtractor:
                 axes = axes.reshape(3, 1)
             
             for i, data in enumerate(episode_data):
-                # 抓取前的图像 + affordance mask
+                # 第一排：机械臂视角的闭合图 + affordance点
                 ax1 = axes[0, i]
-                ax1.imshow(data.pre_grasp_image)
-                
-                # 添加affordance mask
-                mask_overlay = np.zeros_like(data.pre_grasp_image)
-                mask_overlay[data.affordance_mask > 0] = [255, 0, 0]  # 红色
-                ax1.imshow(mask_overlay, alpha=0.3)
+                ax1.imshow(data.stable_close_image)
                 
                 # 添加affordance点
                 x, y = data.affordance_point
                 circle = Circle((x, y), 10, color='red', fill=False, linewidth=2)
                 ax1.add_patch(circle)
                 
-                ax1.set_title(f'Pre-grasp ({data.camera_name})\nAffordance Point: ({x}, {y})')
+                ax1.set_title(f'Arm View - Stable Close ({data.camera_name})\nAffordance Point: ({x}, {y})')
                 ax1.axis('off')
                 
-                # 稳定闭合后的图像
+                # 第二排：头部视角的闭合图 + affordance点
                 ax2 = axes[1, i]
-                ax2.imshow(data.stable_close_image)
-                ax2.set_title(f'Stable Close ({data.camera_name})\nTimestamp: {data.stable_close_timestamp:.2f}')
+                if data.head_camera_image is not None:
+                    ax2.imshow(data.head_camera_image)
+                    
+                    # 添加affordance点
+                    head_x, head_y = data.head_affordance_point
+                    circle = Circle((head_x, head_y), 15, color='red', fill=False, linewidth=3)
+                    ax2.add_patch(circle)
+                    
+                    ax2.set_title(f'Head View - Stable Close\nAffordance Point: ({head_x}, {head_y})')
+                else:
+                    ax2.text(0.5, 0.5, 'No Head Camera Image', ha='center', va='center', transform=ax2.transAxes)
+                    ax2.set_title('Head View - No Image')
                 ax2.axis('off')
                 
-                # 头部相机图像 + 6DOF位姿标注
+                # 第三排：第一帧头部图像 + affordance点
                 ax3 = axes[2, i]
-                if data.head_camera_image is not None:
-                    ax3.imshow(data.head_camera_image)
+                if data.first_frame_head_image is not None:
+                    ax3.imshow(data.first_frame_head_image)
                     
-                    # 添加6DOF位姿标注
+                    # 添加affordance点（使用头部相机的投影）
                     head_x, head_y = data.head_affordance_point
                     circle = Circle((head_x, head_y), 15, color='red', fill=False, linewidth=3)
                     ax3.add_patch(circle)
@@ -610,10 +682,10 @@ class GraspMomentExtractor:
                     ax3.text(10, 30, pose_text, fontsize=8, color='white', 
                             bbox=dict(boxstyle="round,pad=0.3", facecolor='red', alpha=0.7))
                     
-                    ax3.set_title(f'Head Camera (6DOF Pose)\nPoint: ({head_x}, {head_y})')
+                    ax3.set_title(f'First Frame - Head View (6DOF Pose)\nAffordance Point: ({head_x}, {head_y})')
                 else:
-                    ax3.text(0.5, 0.5, 'No Head Camera Image', ha='center', va='center', transform=ax3.transAxes)
-                    ax3.set_title('Head Camera (No Image)')
+                    ax3.text(0.5, 0.5, 'No First Frame Image', ha='center', va='center', transform=ax3.transAxes)
+                    ax3.set_title('First Frame - No Image')
                 ax3.axis('off')
             
             # 保存可视化
@@ -648,6 +720,12 @@ class GraspMomentExtractor:
                 head_camera_path = self.output_dir / "images" / head_camera_filename
                 cv2.imwrite(str(head_camera_path), cv2.cvtColor(data.head_camera_image, cv2.COLOR_RGB2BGR))
             
+            # 保存第一帧头部相机图像
+            if data.first_frame_head_image is not None:
+                first_frame_head_filename = f"{task_id}_{data.episode_id}_first_frame_head_camera_{i:03d}.jpg"
+                first_frame_head_path = self.output_dir / "images" / first_frame_head_filename
+                cv2.imwrite(str(first_frame_head_path), cv2.cvtColor(data.first_frame_head_image, cv2.COLOR_RGB2BGR))
+            
             # 保存affordance掩码
             mask_filename = f"{task_id}_{data.episode_id}_mask_{i:03d}.png"
             mask_path = self.output_dir / "masks" / mask_filename
@@ -660,6 +738,7 @@ class GraspMomentExtractor:
                 'pregrasp_image': f"{task_id}_{data.episode_id}_pregrasp_{i:03d}.jpg",
                 'stable_close_image': f"{task_id}_{data.episode_id}_stable_close_{i:03d}.jpg" if data.stable_close_image is not None else None,
                 'head_camera_image': f"{task_id}_{data.episode_id}_head_camera_{i:03d}.jpg" if data.head_camera_image is not None else None,
+                'first_frame_head_image': f"{task_id}_{data.episode_id}_first_frame_head_camera_{i:03d}.jpg" if data.first_frame_head_image is not None else None,
                 'mask_image': f"{task_id}_{data.episode_id}_mask_{i:03d}.png",
                 'affordance_point': list(data.affordance_point),
                 'head_affordance_point': list(data.head_affordance_point) if data.head_affordance_point is not None else None,

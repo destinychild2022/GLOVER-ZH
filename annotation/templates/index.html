@@ -1,0 +1,1220 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>可视化标注工具</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { display: flex; gap: 20px; }
+        .control-panel { width: 300px; }
+        .image-panel { flex: 1; }
+        .image-display { display: flex; gap: 10px; }
+        .canvas-container { position: relative; border: 1px solid #ccc; }
+        canvas { border: 1px solid #ddd; }
+        .button { margin: 5px; padding: 8px 16px; background: #007bff; color: white; border: none; cursor: pointer; }
+        .button:hover { background: #0056b3; }
+        .button.success { background: #28a745; }
+        .button.danger { background: #dc3545; }
+        .button.danger:hover { background: #c82333; }
+        .input-group { margin: 10px 0; }
+        label { display: block; margin-bottom: 5px; }
+        select, input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        input:focus { outline: none; border-color: #007bff; box-shadow: 0 0 0 2px rgba(0,123,255,0.25); }
+        .status { margin: 10px 0; padding: 10px; background: #f8f9fa; }
+        .image-list { max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; }
+        .image-item { padding: 5px; cursor: pointer; border-bottom: 1px solid #eee; }
+        .image-item:hover { background: #f0f0f0; }
+        .image-item.active { background: #007bff; color: white; }
+        .image-item.annotated { background: #e8f5e8; border-left: 4px solid #28a745; }
+        .image-item.annotated .annotation-status { color: #28a745; font-weight: bold; }
+        .progress { margin: 10px 0; }
+        .progress-bar { width: 100%; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #007bff; transition: width 0.3s; }
+        .predicted-category { background: #e7f3ff; padding: 5px; margin: 5px 0; border-radius: 3px; }
+        .suggestions { background: #fff3cd; padding: 5px; margin: 5px 0; border-radius: 3px; border-left: 3px solid #ffc107; }
+        .suggestions small { color: #856404; }
+    </style>
+</head>
+<body>
+    <h1>可视化标注工具</h1>
+    
+    <div class="container">
+        <div class="control-panel">
+            <h3>控制面板</h3>
+            
+            <div class="progress">
+                <div>进度: <span id="progressText">{{ current_index + 1 }}/{{ image_list|length }}</span></div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressBar" style="width: {{ ((current_index + 1) / image_list|length * 100) if image_list else 0 }}%"></div>
+                </div>
+            </div>
+            
+            <div class="input-group">
+                <label>选择图像:</label>
+                <div class="image-list" id="imageList">
+                    {% for image in image_list %}
+                    <div class="image-item {% if loop.index0 == current_index %}active{% endif %} {% if image in annotated_images %}annotated{% endif %}" onclick="loadImage('{{ image }}')">
+                        {{ image }}
+                        <span class="annotation-status" id="status-{{ image }}" style="display: none; color: green; font-size: 12px;">✓ 已标注</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            
+            <div class="input-group">
+                <label>点击模式: <small style="color: #666;">(按Q键切换)</small></label>
+                <input type="radio" name="mode" value="affordance" checked> 交互点(红) - 主要分割点
+                <input type="radio" name="mode" value="foreground"> 前景点(绿) - 辅助分割
+                <input type="radio" name="mode" value="background"> 背景点(蓝) - 排除区域
+            </div>
+            
+            <div class="input-group">
+                <label>物体类别:</label>
+                <div class="predicted-category" id="predictedObject" style="display: none;">
+                    预测: <span id="predictedObjectText"></span>
+                </div>
+                <div class="suggestions" id="objectSuggestions" style="display: none;">
+                    <small>常用: <span id="objectSuggestionsText"></span></small>
+                </div>
+                <input type="text" id="objectCategory" list="objectCategories" placeholder="输入或选择物体类别，按TAB键智能补全(优先常用类别)" value="object">
+                <datalist id="objectCategories">
+                    {% for category in object_categories %}
+                    <option value="{{ category }}">
+                    {% endfor %}
+                </datalist>
+            </div>
+            
+            <div class="input-group">
+                <label>动作类别:</label>
+                <div class="predicted-category" id="predictedAction" style="display: none;">
+                    预测: <span id="predictedActionText"></span>
+                </div>
+                <div class="suggestions" id="actionSuggestions" style="display: none;">
+                    <small>常用: <span id="actionSuggestionsText"></span></small>
+                </div>
+                <input type="text" id="actionCategory" list="actionCategories" placeholder="输入或选择动作类别，按TAB键智能补全(优先常用类别)" value="grasp">
+                <datalist id="actionCategories">
+                    {% for category in action_categories %}
+                    <option value="{{ category }}">
+                    {% endfor %}
+                </datalist>
+            </div>
+            
+            <div class="input-group">
+                <button class="button" onclick="segmentObject()">分割物体</button>
+                <button class="button success" onclick="saveAnnotation()">保存标注(自动更新JSON)</button>
+                <button class="button danger" onclick="deleteAnnotation()">删除原图</button>
+                <button class="button" onclick="clearPoints()">清除点</button>
+                <button class="button" onclick="skipCurrentImage()">跳过当前图片</button>
+                <button class="button" onclick="saveDataset()">保存数据集</button>
+            </div>
+            
+            <div class="status" id="status">就绪</div>
+        </div>
+        
+        <div class="image-panel">
+            <h3>图像显示</h3>
+            <div class="image-display">
+                <div class="canvas-container">
+                    <h4>原图</h4>
+                    <canvas id="imageCanvas" width="800" height="600"></canvas>
+                </div>
+                <div class="canvas-container">
+                    <h4>分割掩码</h4>
+                    <canvas id="maskCanvas" width="800" height="600"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentImage = null;
+        let currentImagePath = null;
+        let points = [];  // 分割点
+        let labels = [];  // 分割点标签
+        let affordancePoints = [];  // affordance点
+        let currentMask = null;
+        let currentBbox = null;
+        let canvas = document.getElementById('imageCanvas');
+        let maskCanvas = document.getElementById('maskCanvas');
+        let ctx = canvas.getContext('2d');
+        let maskCtx = maskCanvas.getContext('2d');
+        let imageScale = 1.0;
+        let imageOffsetX = 0;
+        let imageOffsetY = 0;
+        let outputInfo = null;  // 存储输出目录信息
+        
+        // 获取输出目录信息
+        function getOutputInfo() {
+            fetch('/get_output_info')
+            .then(response => response.json())
+            .then(data => {
+                outputInfo = data;
+                console.log('输出目录信息:', outputInfo);
+            })
+            .catch(error => {
+                console.error('获取输出目录信息失败:', error);
+                // 使用默认路径
+                outputInfo = {
+                    output_dir: 'output/default',
+                    masks_dir: 'output/default/masks'
+                };
+            });
+        }
+        
+        // 获取mask文件路径
+        function getMaskPath(filename) {
+            if (outputInfo) {
+                const baseName = filename.replace(/\.[^/.]+$/, "");
+                // 使用outputInfo中的masks_dir，但需要转换为URL路径
+                const masksDir = outputInfo.masks_dir.replace('output/', 'output/');
+                return `/${masksDir}/${baseName}_mask.png`;
+            } else {
+                // 使用默认路径
+                const baseName = filename.replace(/\.[^/.]+$/, "");
+                return `/output/masks/${baseName}_mask.png`;
+            }
+        }
+        
+        // 从gt_path获取mask文件路径
+        function getMaskPathFromGtPath(gtPath) {
+            // 检查是否是任务目录格式：task_X/masks/...
+            const taskMatch = gtPath.match(/^(task_\d+)\/masks\//);
+            if (taskMatch) {
+                // 新的路径格式：task_X/masks/...
+                return `/output/${gtPath}`;
+            } else if (gtPath.startsWith('output/')) {
+                // 完整路径格式：output/task_X/masks/...
+                return `/${gtPath}`;
+            } else {
+                // 旧路径格式：masks/...
+                return `/output/masks/${gtPath}`;
+            }
+        }
+        
+        function updateAnnotationStatuses() {
+            // 获取所有标注信息
+            fetch('/get_annotations')
+            .then(response => response.json())
+            .then(data => {
+                const annotations = data.annotations || [];
+                const annotatedImages = new Set(annotations.map(a => a.img_name));
+                
+                // 更新所有图像的状态
+                document.querySelectorAll('.image-item').forEach(item => {
+                    const imageName = item.textContent.split('✓')[0].trim(); // 移除状态文本
+                    const statusElement = item.querySelector('.annotation-status');
+                    
+                    // 只检查已标注的图像是否有对应的mask文件
+                    if (annotatedImages.has(imageName)) {
+                        // 找到对应的标注信息
+                        const annotation = annotations.find(a => a.img_name === imageName);
+                        let maskPath;
+                        
+                        if (annotation && annotation.gt_path) {
+                            // 使用标注中的gt_path
+                            maskPath = getMaskPathFromGtPath(annotation.gt_path);
+                        } else {
+                            // 使用默认路径
+                            maskPath = getMaskPath(imageName);
+                        }
+                        
+                        // 检查mask文件是否存在
+                        fetch(maskPath, { method: 'HEAD' })
+                        .then(response => {
+                            const hasMaskFile = response.ok;
+                            
+                            if (hasMaskFile) {
+                                if (statusElement) {
+                                    statusElement.textContent = '✓ 已标注';
+                                    statusElement.style.display = 'inline-block';
+                                    statusElement.style.color = 'green';
+                                }
+                                item.classList.add('annotated'); // 添加已标注样式
+                            } else {
+                                // 有标注但没有mask文件，显示警告
+                                if (statusElement) {
+                                    statusElement.textContent = '⚠ 标注不完整';
+                                    statusElement.style.display = 'inline-block';
+                                    statusElement.style.color = 'orange';
+                                }
+                                item.classList.add('annotated');
+                            }
+                        })
+                        .catch(() => {
+                            // 检查失败，假设已标注
+                            if (statusElement) {
+                                statusElement.textContent = '✓ 已标注';
+                                statusElement.style.display = 'inline-block';
+                                statusElement.style.color = 'green';
+                            }
+                            item.classList.add('annotated');
+                        });
+                    } else {
+                        // 未标注的图像
+                        if (statusElement) {
+                            statusElement.style.display = 'none';
+                        }
+                        item.classList.remove('annotated'); // 移除已标注样式
+                    }
+                });
+            })
+            .catch(error => {
+                console.error('获取标注状态失败:', error);
+            });
+        }
+        
+        // 页面加载时更新标注状态
+        window.onload = function() {
+            getOutputInfo();  // 获取输出目录信息
+            loadFirstUnannotatedImage();
+            // 延迟更新标注状态，确保DOM已加载
+            setTimeout(updateAnnotationStatuses, 100);
+            // 加载建议
+            loadSuggestions();
+            // 设置TAB补全
+            setupTabCompletion();
+        };
+        
+        function updateStatus(message) {
+            document.getElementById('status').textContent = message;
+        }
+        
+        function updateProgress(current, total) {
+            const progressText = document.getElementById('progressText');
+            const progressBar = document.getElementById('progressBar');
+            progressText.textContent = `${current}/${total}`;
+            progressBar.style.width = `${(current / total) * 100}%`;
+        }
+        
+        function loadFirstImage() {
+            fetch('/load_first_image')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadImageData(data);
+                } else {
+                    updateStatus('加载第一张图片失败: ' + data.error);
+                }
+            })
+            .catch(error => {
+                updateStatus('加载第一张图片错误: ' + error);
+            });
+        }
+        
+        function loadFirstUnannotatedImage() {
+            fetch('/load_first_unannotated_image')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadImageData(data);
+                } else {
+                    updateStatus('加载第一个未标注图片失败: ' + data.error);
+                }
+            })
+            .catch(error => {
+                updateStatus('加载第一个未标注图片错误: ' + error);
+            });
+        }
+        
+        function loadImageData(data) {
+            currentImagePath = data.filepath;
+            currentImage = new Image();
+            currentImage.onload = function() {
+                // 计算缩放比例以适应画布
+                const canvasWidth = 800;
+                const canvasHeight = 600;
+                const scaleX = canvasWidth / this.width;
+                const scaleY = canvasHeight / this.height;
+                imageScale = Math.min(scaleX, scaleY);
+                
+                // 计算居中偏移
+                const scaledWidth = this.width * imageScale;
+                const scaledHeight = this.height * imageScale;
+                imageOffsetX = (canvasWidth - scaledWidth) / 2;
+                imageOffsetY = (canvasHeight - scaledHeight) / 2;
+                
+                // 设置画布尺寸
+                canvas.width = canvasWidth;
+                canvas.height = canvasHeight;
+                maskCanvas.width = canvasWidth;
+                maskCanvas.height = canvasHeight;
+                
+                // 绘制图像
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(this, imageOffsetX, imageOffsetY, scaledWidth, scaledHeight);
+                
+                // 清除mask canvas
+                maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                
+                // 重置状态
+                points = [];
+                labels = [];
+                affordancePoints = [];
+                currentMask = null;
+                currentBbox = null;
+                
+                // 自动切换回红色点标注模式（交互点）
+                document.querySelector('input[name="mode"][value="affordance"]').checked = true;
+                
+                // 隐藏预测类别
+                document.getElementById('predictedObject').style.display = 'none';
+                document.getElementById('predictedAction').style.display = 'none';
+                
+                // 处理已保存的标注信息
+                if (data.saved_annotation) {
+                    console.log('找到已保存的标注:', data.saved_annotation);
+                    // 设置物体类别
+                    document.getElementById('objectCategory').value = data.saved_annotation.object || 'object';
+                    // 设置动作类别
+                    document.getElementById('actionCategory').value = data.saved_annotation.action || 'grasp';
+                    
+                    // 恢复保存的点信息
+                    if (data.saved_annotation.points && data.saved_annotation.points.length > 0) {
+                        points = data.saved_annotation.points;
+                        labels = points.map(() => 1); // 假设所有点都是前景点
+                        console.log('恢复保存的分割点:', points);
+                    }
+                    
+                    if (data.saved_annotation.affordance_points && data.saved_annotation.affordance_points.length > 0) {
+                        affordancePoints = data.saved_annotation.affordance_points;
+                        console.log('恢复保存的affordance点:', affordancePoints);
+                    }
+                    
+                    // 显示已保存的标注信息
+                    updateStatus(`已加载图像: ${data.filename} (已标注: ${data.saved_annotation.object} - ${data.saved_annotation.action})`);
+                    // 显示已标注状态
+                    const statusElement = document.getElementById(`status-${data.filename}`);
+                    if (statusElement) {
+                        statusElement.style.display = 'inline-block';
+                    }
+                    // 添加已标注样式
+                    const imageItem = document.querySelector(`[onclick*="${data.filename}"]`);
+                    if (imageItem) {
+                        imageItem.classList.add('annotated');
+                    }
+                    
+                    // 重新绘制保存的点
+                    setTimeout(() => {
+                        // 重新绘制图像
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(currentImage, imageOffsetX, imageOffsetY, 
+                                    currentImage.width * imageScale, 
+                                    currentImage.height * imageScale);
+                        
+                        // 绘制保存的点
+                        points.forEach((point, index) => {
+                            const color = labels[index] === 1 ? 'green' : 'blue';
+                            drawPoint(canvas, point[0], point[1], color);
+                        });
+                        
+                        affordancePoints.forEach(point => {
+                            drawPoint(canvas, point[0], point[1], 'red');
+                        });
+                        
+                        // 如果有mask文件，自动显示mask
+                        if (data.saved_annotation.gt_path) {
+                            const maskImg = new Image();
+                            maskImg.onload = function() {
+                                maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                                maskCtx.drawImage(this, imageOffsetX, imageOffsetY, 
+                                                currentImage.width * imageScale, 
+                                                currentImage.height * imageScale);
+                                
+                                // 在mask上绘制affordance点
+                                affordancePoints.forEach(point => {
+                                    drawPoint(maskCanvas, point[0], point[1], 'red');
+                                });
+                            };
+                            // 使用gt_path中的相对路径，转换为完整的URL路径
+                            const gtPath = data.saved_annotation.gt_path;
+                            const maskUrl = getMaskPathFromGtPath(gtPath);
+                            maskImg.src = maskUrl;
+                        }
+                    }, 100);
+                } else {
+                    // 检查是否有mask文件
+                    const baseName = data.filename.replace(/\.[^/.]+$/, "");
+                    const maskPath = getMaskPath(data.filename);
+                    
+                    // 基于文件名预测默认类别
+                    const predictedCategories = predictCategoriesFromFilename(data.filename);
+                    
+                    fetch(maskPath, { method: 'HEAD' })
+                    .then(response => {
+                        if (response.ok) {
+                            // 有mask文件但没有标注信息，显示为已标注
+                            updateStatus(`已加载图像: ${data.filename} (已有mask文件)`);
+                            const statusElement = document.getElementById(`status-${data.filename}`);
+                            if (statusElement) {
+                                statusElement.style.display = 'inline-block';
+                            }
+                            const imageItem = document.querySelector(`[onclick*="${data.filename}"]`);
+                            if (imageItem) {
+                                imageItem.classList.add('annotated');
+                            }
+                        } else {
+                            // 没有mask文件，优先使用频率最高的类别，如果没有则使用预测的默认值
+                            let defaultObject = predictedCategories.object;
+                            let defaultAction = predictedCategories.action;
+                            
+                            // 尝试从建议中获取频率最高的类别（只使用真正有使用记录的）
+                            if (window.objectSuggestions && window.objectSuggestions.length > 0) {
+                                defaultObject = window.objectSuggestions[0];
+                            }
+                            if (window.actionSuggestions && window.actionSuggestions.length > 0) {
+                                defaultAction = window.actionSuggestions[0];
+                            }
+                            
+                            document.getElementById('objectCategory').value = defaultObject;
+                            document.getElementById('actionCategory').value = defaultAction;
+                            updateStatus(`已加载图像: ${data.filename} (默认: ${defaultObject} - ${defaultAction})`);
+                            const statusElement = document.getElementById(`status-${data.filename}`);
+                            if (statusElement) {
+                                statusElement.style.display = 'none';
+                            }
+                            const imageItem = document.querySelector(`[onclick*="${data.filename}"]`);
+                            if (imageItem) {
+                                imageItem.classList.remove('annotated');
+                            }
+                        }
+                    })
+                    .catch(() => {
+                        // 检查失败，优先使用频率最高的类别，如果没有则使用预测的默认值
+                        let defaultObject = predictedCategories.object;
+                        let defaultAction = predictedCategories.action;
+                        
+                        // 尝试从建议中获取频率最高的类别（只使用真正有使用记录的）
+                        if (window.objectSuggestions && window.objectSuggestions.length > 0) {
+                            defaultObject = window.objectSuggestions[0];
+                        }
+                        if (window.actionSuggestions && window.actionSuggestions.length > 0) {
+                            defaultAction = window.actionSuggestions[0];
+                        }
+                        
+                        document.getElementById('objectCategory').value = defaultObject;
+                        document.getElementById('actionCategory').value = defaultAction;
+                        updateStatus(`已加载图像: ${data.filename} (默认: ${defaultObject} - ${defaultAction})`);
+                        const statusElement = document.getElementById(`status-${data.filename}`);
+                        if (statusElement) {
+                            statusElement.style.display = 'none';
+                        }
+                        const imageItem = document.querySelector(`[onclick*="${data.filename}"]`);
+                        if (imageItem) {
+                            imageItem.classList.remove('annotated');
+                        }
+                    });
+                }
+                
+                // 检查是否有已保存的mask
+                const baseName = data.filename.replace(/\.[^/.]+$/, "");
+                const maskPath = getMaskPath(data.filename);
+                
+                // 尝试加载已保存的mask
+                const maskImg = new Image();
+                maskImg.onload = function() {
+                    maskCtx.drawImage(this, imageOffsetX, imageOffsetY, 
+                                    currentImage.width * imageScale, 
+                                    currentImage.height * imageScale);
+                    if (data.saved_annotation) {
+                        updateStatus(`已加载图像和mask: ${data.filename} (已标注: ${data.saved_annotation.object} - ${data.saved_annotation.action})`);
+                    } else {
+                        updateStatus(`已加载图像和mask: ${data.filename}`);
+                    }
+                };
+                maskImg.onerror = function() {
+                    if (data.saved_annotation) {
+                        updateStatus(`已加载图像: ${data.filename} (已标注: ${data.saved_annotation.object} - ${data.saved_annotation.action})`);
+                    } else {
+                        updateStatus(`已加载图像: ${data.filename}`);
+                    }
+                };
+                // 如果有已保存的标注信息，优先使用gt_path
+                if (data.saved_annotation && data.saved_annotation.gt_path) {
+                    const gtPath = data.saved_annotation.gt_path;
+                    maskImg.src = getMaskPathFromGtPath(gtPath);
+                } else {
+                    maskImg.src = maskPath;
+                }
+                
+                // 更新选中状态
+                document.querySelectorAll('.image-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                const currentItem = document.querySelector(`[onclick*="${data.filename}"]`);
+                if (currentItem) {
+                    currentItem.classList.add('active');
+                }
+                
+                updateProgress(data.current_index + 1, data.total_count);
+            };
+            currentImage.src = data.image_data;
+        }
+        
+        function loadImage(filename) {
+            // 更新选中状态
+            document.querySelectorAll('.image-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            fetch(`/load_image/${filename}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadImageData(data);
+                } else {
+                    updateStatus('加载失败: ' + data.error);
+                }
+            })
+            .catch(error => {
+                updateStatus('加载错误: ' + error);
+            });
+        }
+        
+        function getMousePos(canvas, evt) {
+            const rect = canvas.getBoundingClientRect();
+            const x = evt.clientX - rect.left;
+            const y = evt.clientY - rect.top;
+            
+            // 转换到图像坐标系
+            const imageX = (x - imageOffsetX) / imageScale;
+            const imageY = (y - imageOffsetY) / imageScale;
+            
+            return { x: imageX, y: imageY };
+        }
+        
+        function drawPoint(canvas, x, y, color) {
+            const ctx = canvas.getContext('2d');
+            const canvasX = x * imageScale + imageOffsetX;
+            const canvasY = y * imageScale + imageOffsetY;
+            
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(canvasX, canvasY, 5, 0, 2 * Math.PI);
+            ctx.fill();
+        }
+        
+        canvas.addEventListener('click', function(evt) {
+            if (!currentImage) {
+                updateStatus('请先选择图像');
+                return;
+            }
+            
+            const pos = getMousePos(canvas, evt);
+            const mode = document.querySelector('input[name="mode"]:checked').value;
+            
+            // 检查点击是否在图像范围内
+            if (pos.x < 0 || pos.y < 0 || pos.x > currentImage.width || pos.y > currentImage.height) {
+                return;
+            }
+            
+            // 添加点
+            if (mode === 'foreground') {
+                points.push([pos.x, pos.y]);
+                labels.push(1); // 前景点
+            } else if (mode === 'background') {
+                points.push([pos.x, pos.y]);
+                labels.push(0); // 背景点
+            } else if (mode === 'affordance') {
+                // affordance点只记录为affordance点，不用于分割
+                affordancePoints.push([pos.x, pos.y]); // 只记录为affordance点
+            }
+            
+            // 绘制点
+            const color = mode === 'foreground' ? 'green' : (mode === 'background' ? 'blue' : 'red');
+            drawPoint(canvas, pos.x, pos.y, color);
+            
+            updateStatus(`添加${mode === 'foreground' ? '前景' : (mode === 'background' ? '背景' : '交互')}点: (${Math.round(pos.x)}, ${Math.round(pos.y)}) - ${mode === 'affordance' ? '主要分割点' : (mode === 'foreground' ? '辅助分割点' : '排除区域')}`);
+        });
+        
+        function segmentObject() {
+            if (!currentImagePath || (points.length === 0 && affordancePoints.length === 0)) {
+                updateStatus('请先选择图像并添加分割点（前景点/交互点或背景点）');
+                return;
+            }
+            
+            // 如果没有分割点，使用affordance点作为前景点
+            let segmentPoints = points;
+            let segmentLabels = labels;
+            if (points.length === 0 && affordancePoints.length > 0) {
+                segmentPoints = affordancePoints;
+                segmentLabels = affordancePoints.map(() => 1); // 所有affordance点作为前景点
+            }
+            
+            updateStatus('正在分割物体...');
+            
+            fetch('/segment', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    image_path: currentImagePath,
+                    points: segmentPoints,
+                    labels: segmentLabels
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // 保存完整的mask数据
+                    currentMask = data.mask;
+                    currentBbox = data.bbox;
+                    
+                    // 显示掩码
+                    const maskImg = new Image();
+                    maskImg.onload = function() {
+                        maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                        maskCtx.drawImage(this, imageOffsetX, imageOffsetY, 
+                                        currentImage.width * imageScale, 
+                                        currentImage.height * imageScale);
+                        
+                        // 只在mask上绘制红色affordance点，不绘制绿色和蓝色点
+                        // 绿色和蓝色点是辅助分割用的，不应该显示在最终mask上
+                        affordancePoints.forEach(point => {
+                            drawPoint(maskCanvas, point[0], point[1], 'red');
+                        });
+                    };
+                    maskImg.src = data.mask_data;
+                    
+                    // 更新物体类别 - 只在用户没有输入内容时才使用预测的类别
+                    if (data.predicted_object && data.predicted_object !== 'unknown') {
+                        document.getElementById('predictedObjectText').textContent = data.predicted_object;
+                        document.getElementById('predictedObject').style.display = 'block';
+                        console.log('预测的物体类别:', data.predicted_object, '但保留用户输入');
+                    } else {
+                        console.log('物体类别预测失败或为空:', data.predicted_object);
+                    }
+                    
+                    // 更新动作类别 - 只在用户没有输入内容时才使用预测的类别
+                    if (data.predicted_action && data.predicted_action !== 'unknown') {
+                        document.getElementById('predictedActionText').textContent = data.predicted_action;
+                        document.getElementById('predictedAction').style.display = 'block';
+                        console.log('预测的动作类别:', data.predicted_action, '但保留用户输入');
+                    } else {
+                        console.log('动作类别预测失败或为空:', data.predicted_action);
+                    }
+                    
+                    updateStatus('分割完成！');
+                } else {
+                    updateStatus('分割失败: ' + data.error);
+                }
+            })
+            .catch(error => {
+                updateStatus('分割错误: ' + error);
+            });
+        }
+        
+        function saveAnnotation() {
+            if (!currentImagePath || !currentMask) {
+                updateStatus('请先完成分割');
+                return;
+            }
+            
+            const affordance = affordancePoints.length > 0 ? [affordancePoints[0][0] / currentImage.width, affordancePoints[0][1] / currentImage.height] : [0.5, 0.5];
+            
+            updateStatus('正在保存标注...');
+            
+            // 直接使用现有的mask数据
+            saveAnnotationWithMask(currentMask);
+        }
+        
+        function saveAnnotationWithMask(maskData) {
+            const affordance = affordancePoints.length > 0 ? [affordancePoints[0][0] / currentImage.width, affordancePoints[0][1] / currentImage.height] : [0.5, 0.5];
+            
+            fetch('/save_annotation', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    image_path: currentImagePath,
+                    bbox: currentBbox,
+                    affordance: affordance,
+                    object_category: document.getElementById('objectCategory').value.trim(),
+                    action_category: document.getElementById('actionCategory').value.trim(),
+                    mask: maskData,  // 使用原始mask数据
+                    points: points,
+                    affordance_points: affordancePoints
+                })
+            })
+            .then(response => {
+                // 检查响应类型
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error(`Expected JSON response but got ${contentType}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    updateStatus(data.message);
+                    console.log('保存成功，下一张图片:', data.next_image);
+                    
+                    // 如果需要刷新建议，重新加载
+                    if (data.refresh_suggestions) {
+                        console.log('刷新建议数据...');
+                        loadSuggestions();
+                    }
+                    
+                    // 更新标注状态显示
+                    updateAnnotationStatuses();
+                    
+                    // 自动切换到下一张图像
+                    if (data.next_image) {
+                        updateStatus('自动切换到下一张图片...');
+                        console.log('开始加载下一张图片:', data.next_image);
+                        
+                        // 如果有预加载的图像数据，直接使用
+                        if (data.next_image_data) {
+                            console.log('使用预加载的图像数据');
+                            const loadData = {
+                                success: true,
+                                filename: data.next_image,
+                                filepath: '/path/to/' + data.next_image, // 这个路径不重要，因为我们有图像数据
+                                image_data: data.next_image_data,
+                                width: 800, // 这些值会在loadImageData中重新计算
+                                height: 600,
+                                current_index: data.next_index,
+                                total_count: data.total_count
+                            };
+                            loadImageData(loadData);
+                            
+                            // 更新选中状态
+                            document.querySelectorAll('.image-item').forEach(item => {
+                                item.classList.remove('active');
+                            });
+                            const nextItem = document.querySelector(`[onclick*="${data.next_image}"]`);
+                            if (nextItem) {
+                                nextItem.classList.add('active');
+                            }
+                        } else {
+                            // 如果没有预加载数据，则正常加载
+                            fetch(`/load_image/${data.next_image}`)
+                            .then(response => response.json())
+                            .then(loadData => {
+                                if (loadData.success) {
+                                    loadImageData(loadData);
+                                    // 更新选中状态
+                                    document.querySelectorAll('.image-item').forEach(item => {
+                                        item.classList.remove('active');
+                                    });
+                                    const nextItem = document.querySelector(`[onclick*="${data.next_image}"]`);
+                                    if (nextItem) {
+                                        nextItem.classList.add('active');
+                                    }
+                                } else {
+                                    updateStatus('加载下一张图片失败: ' + loadData.error);
+                                }
+                            })
+                            .catch(error => {
+                                updateStatus('加载下一张图片错误: ' + error);
+                            });
+                        }
+                    } else {
+                        updateStatus('没有更多图片，标注完成！');
+                    }
+                } else {
+                    updateStatus('保存失败: ' + data.error);
+                }
+            })
+            .catch(error => {
+                updateStatus('保存错误: ' + error);
+                console.error('保存错误:', error);
+            });
+        }
+        
+        // RLE压缩mask数据
+        function compressMask(mask) {
+            const height = mask.length;
+            const width = mask[0].length;
+            const compressed = [];
+            
+            for (let i = 0; i < height; i++) {
+                let count = 0;
+                let current = mask[i][0];
+                
+                for (let j = 0; j < width; j++) {
+                    if (mask[i][j] === current) {
+                        count++;
+                    } else {
+                        compressed.push(count);
+                        current = mask[i][j];
+                        count = 1;
+                    }
+                }
+                compressed.push(count); // 添加最后一组
+            }
+            
+            return {
+                shape: [height, width],
+                data: compressed,
+                firstValue: mask[0][0] // 记录第一个值
+            };
+        }
+        
+        function clearPoints() {
+            points = [];
+            labels = [];
+            affordancePoints = [];
+            currentMask = null;
+            currentBbox = null;
+            
+            // 重新绘制图像
+            if (currentImage) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(currentImage, imageOffsetX, imageOffsetY, 
+                            currentImage.width * imageScale, 
+                            currentImage.height * imageScale);
+                
+                // 清除mask canvas
+                maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            }
+            
+            // 隐藏预测类别
+            document.getElementById('predictedObject').style.display = 'none';
+            document.getElementById('predictedAction').style.display = 'none';
+            
+            updateStatus('已清除所有点');
+        }
+
+        function deleteAnnotation() {
+            if (!currentImagePath) {
+                updateStatus('没有当前图片可删除');
+                return;
+            }
+            
+            if (!confirm('确定要删除当前图片吗？这将删除图片文件、标注信息和mask文件。此操作不可恢复！')) {
+                return;
+            }
+            
+            updateStatus('正在删除图片...');
+            
+            fetch('/delete_annotation', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    image_path: currentImagePath
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    updateStatus(data.message);
+                    console.log('删除成功，当前索引:', data.current_index);
+                    
+                    // 从图像列表中移除被删除的图片
+                    const deletedImageName = currentImagePath.split('/').pop();
+                    const imageItems = document.querySelectorAll('.image-item');
+                    imageItems.forEach(item => {
+                        if (item.textContent.includes(deletedImageName)) {
+                            item.remove();
+                        }
+                    });
+                    
+                    // 重新加载当前索引位置的图片
+                    if (data.total_count > 0) {
+                        updateStatus('重新加载当前索引位置的图片...');
+                        
+                        // 获取当前索引位置的图片
+                        fetch('/get_image_list')
+                        .then(response => response.json())
+                        .then(imageListData => {
+                            if (imageListData.images && imageListData.images.length > 0) {
+                                const currentIndex = Math.min(data.current_index, imageListData.images.length - 1);
+                                const currentImage = imageListData.images[currentIndex];
+                                
+                                console.log('加载当前索引位置的图片:', currentImage);
+                                
+                                fetch(`/load_image/${currentImage}`)
+                                .then(response => response.json())
+                                .then(loadData => {
+                                    if (loadData.success) {
+                                        loadImageData(loadData);
+                                        // 更新选中状态
+                                        document.querySelectorAll('.image-item').forEach(item => {
+                                            item.classList.remove('active');
+                                        });
+                                        const currentItem = document.querySelector(`[onclick*="${currentImage}"]`);
+                                        if (currentItem) {
+                                            currentItem.classList.add('active');
+                                        }
+                                    } else {
+                                        updateStatus('加载当前图片失败: ' + loadData.error);
+                                    }
+                                })
+                                .catch(error => {
+                                    updateStatus('加载当前图片错误: ' + error);
+                                });
+                            } else {
+                                updateStatus('没有更多图片，标注完成！');
+                            }
+                        })
+                        .catch(error => {
+                            updateStatus('获取图片列表失败: ' + error);
+                        });
+                    } else {
+                        updateStatus('没有更多图片，标注完成！');
+                    }
+                } else {
+                    updateStatus('删除失败: ' + data.error);
+                }
+            })
+            .catch(error => {
+                updateStatus('删除错误: ' + error);
+                console.error('删除错误:', error);
+            });
+        }
+
+        function skipCurrentImage() {
+            if (!currentImagePath) {
+                updateStatus('没有当前图片可跳过');
+                return;
+            }
+            
+            updateStatus('跳过当前图片...');
+            
+            // 获取下一张图片
+            const currentFilename = currentImagePath.split('/').pop();
+            
+            // 获取图像列表
+            fetch('/get_image_list')
+            .then(response => response.json())
+            .then(data => {
+                const currentIndex = data.images.indexOf(currentFilename);
+                if (currentIndex !== -1) {
+                    const nextIndex = (currentIndex + 1) % data.images.length;
+                    const nextImage = data.images[nextIndex];
+                    
+                    console.log('跳过到下一张图片:', nextImage);
+                    fetch(`/load_image/${nextImage}`)
+                    .then(response => response.json())
+                    .then(loadData => {
+                        if (loadData.success) {
+                            loadImageData(loadData);
+                            // 更新选中状态
+                            document.querySelectorAll('.image-item').forEach(item => {
+                                item.classList.remove('active');
+                            });
+                            const nextItem = document.querySelector(`[onclick*="${nextImage}"]`);
+                            if (nextItem) {
+                                nextItem.classList.add('active');
+                            }
+                        } else {
+                            updateStatus('加载下一张图片失败: ' + loadData.error);
+                        }
+                    })
+                    .catch(error => {
+                        updateStatus('加载下一张图片错误: ' + error);
+                    });
+                } else {
+                    updateStatus('无法找到当前图片的索引');
+                }
+            })
+            .catch(error => {
+                updateStatus('获取图像列表失败: ' + error);
+            });
+        }
+        
+        function saveDataset() {
+            fetch('/save_dataset', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    updateStatus(data.message);
+                } else {
+                    updateStatus('保存数据集失败: ' + data.error);
+                }
+            })
+            .catch(error => {
+                updateStatus('保存数据集错误: ' + error);
+            });
+        }
+        
+        function loadSuggestions() {
+            fetch('/get_suggestions')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // 保存建议数据到全局变量
+                    window.objectSuggestions = data.object_suggestions || [];
+                    window.actionSuggestions = data.action_suggestions || [];
+                    
+                    // 显示物体类别建议
+                    if (data.object_suggestions && data.object_suggestions.length > 0) {
+                        const objectSuggestionsText = data.object_suggestions.slice(0, 10).join(', ');
+                        document.getElementById('objectSuggestionsText').textContent = objectSuggestionsText;
+                        document.getElementById('objectSuggestions').style.display = 'block';
+                    }
+                    
+                    // 显示动作类别建议
+                    if (data.action_suggestions && data.action_suggestions.length > 0) {
+                        const actionSuggestionsText = data.action_suggestions.slice(0, 10).join(', ');
+                        document.getElementById('actionSuggestionsText').textContent = actionSuggestionsText;
+                        document.getElementById('actionSuggestions').style.display = 'block';
+                    }
+                    
+                    console.log('加载建议成功:', data);
+                } else {
+                    console.error('加载建议失败:', data.error);
+                }
+            })
+            .catch(error => {
+                console.error('加载建议错误:', error);
+            });
+        }
+        
+        // TAB键自动补全功能
+        
+        function setupTabCompletion() {
+            const objectInput = document.getElementById('objectCategory');
+            const actionInput = document.getElementById('actionCategory');
+            
+            // 使用全局建议数据，如果没有则获取
+            if (!window.objectSuggestions || !window.actionSuggestions) {
+                fetch('/get_suggestions')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        window.objectSuggestions = data.object_suggestions || [];
+                        window.actionSuggestions = data.action_suggestions || [];
+                    }
+                })
+                .catch(error => {
+                    console.error('获取建议失败:', error);
+                    window.objectSuggestions = [];
+                    window.actionSuggestions = [];
+                });
+            }
+            
+            // 智能自动补全函数
+            function findBestMatch(input, suggestions, allCategories) {
+                const inputLower = input.toLowerCase();
+                
+                // 首先在常用建议中查找以输入开头的（优先常用类别）
+                const suggestionStartsWith = suggestions.filter(sug => 
+                    sug.toLowerCase().startsWith(inputLower)
+                );
+                
+                if (suggestionStartsWith.length > 0) {
+                    return suggestionStartsWith[0];
+                }
+                
+                // 然后在预定义类别中查找以输入开头的
+                const startsWithMatches = allCategories.filter(cat => 
+                    cat.toLowerCase().startsWith(inputLower)
+                );
+                
+                if (startsWithMatches.length > 0) {
+                    return startsWithMatches[0];
+                }
+                
+                // 在常用建议中查找包含输入的
+                const suggestionContains = suggestions.filter(sug => 
+                    sug.toLowerCase().includes(inputLower)
+                );
+                
+                if (suggestionContains.length > 0) {
+                    return suggestionContains[0];
+                }
+                
+                // 最后在预定义类别中查找包含输入的
+                const containsMatches = allCategories.filter(cat => 
+                    cat.toLowerCase().includes(inputLower)
+                );
+                
+                if (containsMatches.length > 0) {
+                    return containsMatches[0];
+                }
+                
+                // 如果都没有找到，返回第一个常用建议
+                return suggestions.length > 0 ? suggestions[0] : '';
+            }
+            
+            // 物体类别TAB补全
+            objectInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const currentValue = this.value.trim();
+                    const allCategories = {{ object_categories | tojson }};
+                    const bestMatch = findBestMatch(currentValue, window.objectSuggestions || [], allCategories);
+                    if (bestMatch) {
+                        this.value = bestMatch;
+                        this.focus();
+                    }
+                }
+            });
+            
+            // 动作类别TAB补全
+            actionInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const currentValue = this.value.trim();
+                    const allCategories = {{ action_categories | tojson }};
+                    const bestMatch = findBestMatch(currentValue, window.actionSuggestions || [], allCategories);
+                    if (bestMatch) {
+                        this.value = bestMatch;
+                        this.focus();
+                    }
+                }
+            });
+            
+            // Q键快捷键切换点击模式
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'q' || e.key === 'Q') {
+                    e.preventDefault();
+                    const currentMode = document.querySelector('input[name="mode"]:checked').value;
+                    let nextMode;
+                    
+                    switch (currentMode) {
+                        case 'affordance':
+                            nextMode = 'foreground';
+                            break;
+                        case 'foreground':
+                            nextMode = 'background';
+                            break;
+                        case 'background':
+                            nextMode = 'affordance';
+                            break;
+                        default:
+                            nextMode = 'affordance';
+                    }
+                    
+                    document.querySelector(`input[name="mode"][value="${nextMode}"]`).checked = true;
+                    
+                    // 显示切换提示
+                    const modeNames = {
+                        'affordance': '交互点(红)',
+                        'foreground': '前景点(绿)', 
+                        'background': '背景点(蓝)'
+                    };
+                    updateStatus(`点击模式已切换为: ${modeNames[nextMode]}`);
+                }
+            });
+        }
+        
+        function predictCategoriesFromFilename(filename) {
+            // 返回最常用的物体和动作类别
+            // 只返回真正有使用记录的类别
+            let defaultObject = 'object';  // 默认值
+            let defaultAction = 'grasp';   // 默认值
+            
+            if (window.objectSuggestions && window.objectSuggestions.length > 0) {
+                defaultObject = window.objectSuggestions[0];
+            }
+            if (window.actionSuggestions && window.actionSuggestions.length > 0) {
+                defaultAction = window.actionSuggestions[0];
+            }
+            
+            return { object: defaultObject, action: defaultAction };
+        }
+    </script>
+</body>
+</html>
+    

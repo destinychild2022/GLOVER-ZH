@@ -108,7 +108,7 @@ ipython_config.py
 #poetry.lock
 
 # pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
+#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
 #pdm.lock
 #   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
 #   in version control.
@@ -184,4 +184,62 @@ extract_affordence/debug_output/
 *.json
 !misc/*.png
 !misc/*.jpg
+
+# GLOVER specific exclusions
+output/
+runs/
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.pt
+*.pkl
+*.h5
+*.hdf5
+*.npz
+*.npy
+*.tar
+*.zip
+*.gz
+*.bz2
+*.7z
+
+# Training outputs and logs
+train_glover_custom.log
+*.log
+logs/
+checkpoints/
+ckpt_model/
+global_step*/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Model weights and large files
+model/
+models/
+weights/
+pretrained/
+checkpoint/
+
+# Data files
+data/
+dataset/
+datasets/
+annotation/output/
+annotation/non_grasp_frames_json/
+
+# Evaluation results
+eval_results/
+results/
+exp_eval/
+handal_eval_results.txt
+
+# Test files
+test_*.py
+*_test.py
 

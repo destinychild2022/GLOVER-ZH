@@ -11,6 +11,7 @@ from .threedoi_dataset import DoiDataset
 from .ego4d_dataset import Ego4DDataset
 from .epic100_dataset import Epic100Dataset
 from .handal_dataset import HANDALDataset
+from .custom_annotation_dataset import CustomAnnotationDataset
 
 
 def collate_fn(
@@ -153,12 +154,14 @@ class HybridDataset(torch.utils.data.Dataset):
         image_size: int = 224,
         dataset="3doi||ego4d||epic100||handal",
         sample_rate=[9, 3, 3, 1],
+        annotation_dir=None,  # 新增参数用于自定义标注数据集
     ):
         self.samples_per_epoch = samples_per_epoch
         sample_rate = np.array(sample_rate)
         self.sample_rate = sample_rate / sample_rate.sum()
 
         self.base_image_dir = base_image_dir
+        self.annotation_dir = annotation_dir  # 新增
         self.image_size = image_size
         self.tokenizer = tokenizer
         self.precision = precision
@@ -216,6 +219,23 @@ class HybridDataset(torch.utils.data.Dataset):
                         precision,
                         image_size,
                         data_name="handal",
+                    )
+                )
+            
+            elif dataset == "custom_annotation":
+                # 新增：支持自定义标注数据集
+                if annotation_dir is None:
+                    raise ValueError("annotation_dir must be provided for custom_annotation dataset")
+                self.all_datasets.append(
+                    CustomAnnotationDataset(
+                        base_image_dir,
+                        annotation_dir,
+                        tokenizer,
+                        vision_tower,
+                        samples_per_epoch,
+                        precision,
+                        image_size,
+                        data_name="custom_annotation",
                     )
                 )
 

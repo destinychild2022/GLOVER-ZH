@@ -5,6 +5,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import BitsAndBytesConfig, CLIPVisionModel
 
+# 添加性能分析装饰器
+import wrapt
+from line_profiler import LineProfiler
+lp = LineProfiler()
+
+def profile_evaluate():
+    """专门用于分析GLOVER evaluate方法的装饰器"""
+    @wrapt.decorator
+    def wrapper(func, instance, args, kwargs):
+        global lp
+        lp_wrapper = lp(func)
+        res = lp_wrapper(*args, **kwargs)
+        lp.print_stats()
+        return res
+    return wrapper
+
 from utils.utils import (
     DEFAULT_IM_END_TOKEN,
     DEFAULT_IM_START_TOKEN,
@@ -192,7 +208,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
             self.kl_loss_weight = kwargs.pop("kl_loss_weight", None)
             config.mm_vision_tower = config.vision_tower
 
-        self.seg_token_idx = kwargs.pop("seg_token_idx")
+        self.seg_token_idx = kwargs.pop("seg_token_idx", 1000)
 
         super().__init__(config)
 
@@ -205,15 +221,19 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
 
     def get_visual_embs(self, pixel_values: torch.FloatTensor):
         with torch.no_grad():
-            image_embeddings_list = []
-            for i in range(pixel_values.shape[0]):
-                torch.cuda.empty_cache()
-                image_embeddings = self.model.visual_model.image_encoder(
-                    pixel_values[i].unsqueeze(0)
-                )
-                image_embeddings_list.append(image_embeddings)
-            torch.cuda.empty_cache()
-            image_embeddings = torch.cat(image_embeddings_list, 0)
+            # 优化：批量处理而不是逐个处理
+            if pixel_values.shape[0] > 1:
+                # 批量处理
+                image_embeddings = self.model.visual_model.image_encoder(pixel_values)
+            else:
+                # 单个样本处理
+                image_embeddings_list = []
+                for i in range(pixel_values.shape[0]):
+                    image_embeddings = self.model.visual_model.image_encoder(
+                        pixel_values[i].unsqueeze(0)
+                    )
+                    image_embeddings_list.append(image_embeddings)
+                image_embeddings = torch.cat(image_embeddings_list, 0)
         return image_embeddings
 
     def forward(self, **kwargs):
@@ -417,6 +437,7 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
             "kl_loss": kl_loss,
         }
 
+    # @profile_evaluate()
     def evaluate(
         self,
         images_clip,
@@ -439,36 +460,42 @@ class GloverForCausalLM(LlavaLlamaForCausalLM):
                     output_hidden_states=True,
                     return_dict_in_generate=True,
                     do_sample=False,
+                    use_cache=True,  # 启用缓存加速
+                    early_stopping=True,  # 启用早停
                     pad_token_id=tokenizer.pad_token_id if tokenizer else None,
                     eos_token_id=tokenizer.eos_token_id if tokenizer else None,
                 )
                 
                 # Debug: check what outputs contains
-                print(f"Debug: outputs type: {type(outputs)}")
-                if hasattr(outputs, '__dict__'):
-                    print(f"Debug: outputs attributes: {list(outputs.__dict__.keys())}")
+                # print(f"Debug: outputs type: {type(outputs)}")
+                # if hasattr(outputs, '__dict__'):
+                #     print(f"Debug: outputs attributes: {list(outputs.__dict__.keys())}")
                 
                 # Check if outputs has hidden_states attribute
                 if not hasattr(outputs, 'hidden_states'):
-                    print(f"Error: outputs does not have hidden_states attribute. outputs: {outputs}")
+                    # print(f"Error: outputs does not have hidden_states attribute. outputs: {outputs}")
                     # Try to handle the case where outputs might be a string or different format
                     if isinstance(outputs, str):
-                        print("Error: generate method returned a string instead of expected object")
+                        # print("Error: generate method returned a string instead of expected object")
                         return None, []
                     else:
-                        print(f"Error: unexpected outputs format: {type(outputs)}")
+                        # print(f"Error: unexpected outputs format: {type(outputs)}")
                         return None, []
                 
                 output_hidden_states = outputs.hidden_states[-1]
                 output_ids = outputs.sequences
                 
             except Exception as e:
-                print(f"Error in generate method: {e}")
-                import traceback
-                traceback.print_exc()
+                # print(f"Error in generate method: {e}")
+                # import traceback
+                # traceback.print_exc()
                 return None, []
 
             seg_token_mask = output_ids[:, 1:] == self.seg_token_idx
+            
+            # 监控segmentation token数量
+            seg_token_count = seg_token_mask.sum().item()
+            # print(f"生成的segmentation token数量: {seg_token_count}")  # 注释掉打印
             seg_token_mask = torch.cat(
                 [
                     torch.zeros((seg_token_mask.shape[0], 255)).bool().to(input_ids.device),

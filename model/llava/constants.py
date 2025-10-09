@@ -5,7 +5,7 @@ LOGDIR = "."
 
 # Model Constants
 IGNORE_INDEX = -100
-IMAGE_TOKEN_INDEX = -200
+IMAGE_TOKEN_INDEX = 151655  # 使用Qwen原生的<|image_pad|> token
 DEFAULT_IMAGE_TOKEN = "<image>"
 DEFAULT_IMAGE_PATCH_TOKEN = "<im_patch>"
 DEFAULT_IM_START_TOKEN = "<im_start>"

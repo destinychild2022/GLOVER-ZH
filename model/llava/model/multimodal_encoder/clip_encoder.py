@@ -10,20 +10,26 @@ class CLIPVisionTower(nn.Module):
         self.is_loaded = False
 
         self.vision_tower_name = vision_tower
-        self.select_layer = args.mm_vision_select_layer
+        # 兼容Qwen2.5-VL配置
+        if hasattr(args, 'mm_vision_select_layer'):
+            self.select_layer = args.mm_vision_select_layer
+        elif hasattr(args, 'mm_vision_select_feature'):
+            self.select_layer = args.mm_vision_select_feature
+        else:
+            self.select_layer = -2  # 默认值
         self.select_feature = getattr(args, "mm_vision_select_feature", "patch")
 
         if not delay_load:
             self.load_model()
         else:
-            self.cfg_only = CLIPVisionConfig.from_pretrained(self.vision_tower_name)
+            self.cfg_only = CLIPVisionConfig.from_pretrained(self.vision_tower_name, local_files_only=True)
 
     def load_model(self):
         self.image_processor = CLIPImageProcessor.from_pretrained(
-            self.vision_tower_name
+            self.vision_tower_name, local_files_only=True
         )
         self.vision_tower = CLIPVisionModel.from_pretrained(
-            self.vision_tower_name, low_cpu_mem_usage=True
+            self.vision_tower_name, low_cpu_mem_usage=True, local_files_only=True
         )
         self.vision_tower.requires_grad_(False)
         self.is_loaded = True

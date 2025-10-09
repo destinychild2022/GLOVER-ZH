@@ -5,7 +5,7 @@ import torch
 import torch.distributed as dist
 
 IGNORE_INDEX = -100
-IMAGE_TOKEN_INDEX = -200
+IMAGE_TOKEN_INDEX = 151655  # 使用Qwen原生的<|image_pad|> token
 DEFAULT_IMAGE_TOKEN = "<image>"
 DEFAULT_IMAGE_PATCH_TOKEN = "<im_patch>"
 DEFAULT_IM_START_TOKEN = "<im_start>"
@@ -39,6 +39,18 @@ ANSWER_LIST = [
     "Sure, it is [SEG].",
     "Sure, the segmentation result is [SEG].",
     "[SEG].",
+]
+
+# 增强的答案列表，让[SEG] token更明确地表示分割任务
+ENHANCED_ANSWER_LIST = [
+    "The segmentation mask is [SEG].",
+    "Here is the segmentation result: [SEG].",
+    "I can see the object and here's the mask [SEG].",
+    "The highlighted area is [SEG].",
+    "This is the segmentation [SEG].",
+    "I'll segment it for you: [SEG].",
+    "The mask shows [SEG].",
+    "Here's the segmented region [SEG].",
 ]
 
 

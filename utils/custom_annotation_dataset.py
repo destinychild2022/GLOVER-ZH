@@ -12,7 +12,7 @@ from model.llava import conversation as conversation_lib
 from model.llava.constants import DEFAULT_IMAGE_TOKEN
 from model.llava.mm_utils import tokenizer_image_token
 from .utils import DEFAULT_IM_END_TOKEN, DEFAULT_IMAGE_TOKEN
-from segment_anything.utils.transforms import ResizeLongestSide
+from model.segment_anything.utils.transforms import ResizeLongestSide
 
 
 class CustomAnnotationDataset(Dataset):
@@ -90,8 +90,8 @@ class CustomAnnotationDataset(Dataset):
 
         # Pad
         h, w = x.shape[-2:]
-        padh = self.img_size - h
-        padw = self.img_size - w
+        padh = self.image_size - h
+        padw = self.image_size - w
         x = F.pad(x, (0, padw, 0, padh))
         return x
 
@@ -188,6 +188,17 @@ class CustomAnnotationDataset(Dataset):
 
         # 预处理图像
         image = self.preprocess(torch.from_numpy(image).permute(2, 0, 1).contiguous())
+        
+        # 根据precision设置数据类型
+        if self.precision == "fp16":
+            image = image.half()
+            image_clip = image_clip.half()
+        elif self.precision == "bf16":
+            image = image.bfloat16()
+            image_clip = image_clip.bfloat16()
+        else:
+            image = image.float()
+            image_clip = image_clip.float()
 
         # 处理mask - 使用float32格式，与GLOVER++一致
         masks = torch.from_numpy(binary_mask)

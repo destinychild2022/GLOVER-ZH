@@ -1,0 +1,100 @@
+graph TD
+    %% 输入数据
+    A["输入数据<br/>input_dict"] --> B["数据预处理"]
+    
+    %% 数据预处理
+    B --> C1["文本处理"]
+    B --> C2["图像处理"]
+    
+    C1 --> D1["input_ids<br/>[batch_size, seq_len]"]
+    C1 --> D2["labels<br/>[batch_size, seq_len]"]
+    C1 --> D3["attention_masks<br/>[batch_size, seq_len]"]
+    C1 --> D4["offset<br/>[batch_size+1]"]
+    
+    C2 --> E1["images<br/>[batch_size, 3, 1024, 1024]<br/>SAM输入图像"]
+    C2 --> E2["images_clip<br/>[batch_size, 3, 224, 224]<br/>CLIP输入图像"]
+    C2 --> E3["masks_list<br/>List[torch.FloatTensor]<br/>真实掩码标签"]
+    C2 --> E4["resize_list<br/>List[tuple]<br/>图像尺寸信息"]
+    
+    %% 视觉特征提取
+    E1 --> F["SAM Image Encoder<br/>ViT-H/14"]
+    F --> G["image_embeddings<br/>[batch_size, 256, 64, 64]"]
+    
+    %% 多模态语言模型
+    E2 --> H["CLIP Vision Encoder<br/>ViT-L/14"]
+    D1 --> I["LLaVA Model<br/>Llama-2-7B"]
+    D2 --> I
+    D3 --> I
+    H --> I
+    
+    I --> J["output_hidden_states<br/>[batch_size, seq_len, 4096]"]
+    
+    %% 文本特征提取
+    J --> K["text_hidden_fcs<br/>Linear Layer"]
+    K --> L["last_hidden_state<br/>[batch_size, seq_len, 4096]"]
+    
+    %% [SEG]标记检测
+    D1 --> M["seg_token_mask检测<br/>查找[SEG]标记位置"]
+    M --> N["seg_token_mask<br/>[batch_size, seq_len]<br/>布尔掩码"]
+    
+    L --> O["提取[SEG]位置的隐藏状态"]
+    N --> O
+    O --> P["pred_embeddings<br/>List[torch.Tensor]<br/>每个[SEG]的嵌入<br/>[num_seg_tokens, 4096]"]
+    
+    %% 第一阶段SAM
+    G --> Q1["SAM Prompt Encoder<br/>Stage 1"]
+    P --> Q1
+    Q1 --> R1["sparse_embeddings<br/>[1, 2, 256]"]
+    Q1 --> S1["dense_embeddings<br/>[1, 256, 64, 64]"]
+    
+    R1 --> T1["SAM Mask Decoder<br/>Stage 1"]
+    S1 --> T1
+    G --> T1
+    T1 --> U1["low_res_masks<br/>[1, 1, 256, 256]"]
+    T1 --> V1["iou_predictions<br/>[1, 1]"]
+    
+    %% 第二阶段SAM
+    U1 --> Q2["SAM Prompt Encoder<br/>Stage 2"]
+    P --> Q2
+    Q2 --> R2["sparse_embeddings1<br/>[1, 2, 256]"]
+    Q2 --> S2["dense_embeddings1<br/>[1, 256, 64, 64]"]
+    
+    R2 --> T2["SAM Mask Decoder<br/>Stage 2"]
+    S2 --> T2
+    G --> T2
+    T2 --> U2["low_res_masks1<br/>[1, 1, 256, 256]"]
+    T2 --> V2["iou_predictions1<br/>[1, 1]"]
+    
+    %% 后处理
+    U2 --> W["Mask Postprocessing<br/>上采样到原始尺寸"]
+    E4 --> W
+    W --> X["pred_masks<br/>List[torch.Tensor]<br/>最终预测掩码<br/>[1, H, W]"]
+    
+    %% 损失计算
+    I --> Y1["CE Loss<br/>交叉熵损失<br/>文本生成"]
+    X --> Y2["Mask Loss<br/>Focal Loss + Dice Loss<br/>掩码预测"]
+    X --> Y3["KL Loss<br/>KL散度损失<br/>掩码质量"]
+    E3 --> Y2
+    E3 --> Y3
+    
+    Y1 --> Z["Total Loss<br/>= CE + Mask + KL<br/>总损失"]
+    Y2 --> Z
+    Y3 --> Z
+    
+    %% 输出
+    Z --> AA["训练输出<br/>output_dict<br/>loss, ce_loss, mask_loss, kl_loss"]
+    X --> BB["推理输出<br/>pred_masks, gt_masks"]
+    
+    %% 样式定义
+    classDef inputStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef processStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef outputStyle fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef lossStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef samStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    
+    %% 应用样式
+    class A,B,C1,C2,D1,D2,D3,D4,E1,E2,E3,E4 inputStyle
+    class F,H,I,K,M,O processStyle
+    class Q1,T1,Q2,T2,W samStyle
+    class AA,BB outputStyle
+    class Y1,Y2,Y3,Z lossStyle

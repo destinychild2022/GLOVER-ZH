@@ -11,12 +11,13 @@ echo "开始提取夹爪闭合时刻数据..."
 echo "数据源: $DATA_ROOT"
 echo "输出目录: $OUTPUT_DIR"
 
-# 运行夹爪闭合时刻提取脚本
+# 运行夹爪闭合时刻提取脚本 - 使用test脚本中的2600003任务
 python3 extract_grasp_moments.py \
     --data_root $DATA_ROOT \
     --output_dir $OUTPUT_DIR \
-    --max_tasks 2 \
-    --max_episodes_per_task 1
+    --max_tasks 1 \
+    --max_episodes_per_task 1 \
+    --specific_tasks 2600003
 
 echo "提取完成！"
 echo "输出目录: $OUTPUT_DIR"

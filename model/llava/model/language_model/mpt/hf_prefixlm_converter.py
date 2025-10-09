@@ -12,23 +12,50 @@ from types import MethodType
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.nn.functional as F
 from transformers.models.bloom.modeling_bloom import (
     BaseModelOutputWithPastAndCrossAttentions, BloomForCausalLM, BloomModel,
     CausalLMOutputWithCrossAttentions, CrossEntropyLoss)
-from transformers.models.bloom.modeling_bloom import \
-    _expand_mask as _expand_mask_bloom
-from transformers.models.bloom.modeling_bloom import \
-    _make_causal_mask as _make_causal_mask_bloom
 from transformers.models.bloom.modeling_bloom import logging
 from transformers.models.gpt2.modeling_gpt2 import GPT2LMHeadModel
 from transformers.models.gpt_neo.modeling_gpt_neo import GPTNeoForCausalLM
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXForCausalLM
 from transformers.models.gptj.modeling_gptj import GPTJForCausalLM
 from transformers.models.opt.modeling_opt import OPTForCausalLM
-from transformers.models.opt.modeling_opt import \
-    _expand_mask as _expand_mask_opt
-from transformers.models.opt.modeling_opt import \
-    _make_causal_mask as _make_causal_mask_opt
+
+# 添加缺失的mask函数实现
+import torch
+import torch.nn.functional as F
+
+def _make_causal_mask(
+    input_ids_shape: torch.Size, device: torch.device, past_key_values_length: int = 0
+) -> torch.BoolTensor:
+    """
+    Make causal mask used for bi-directional self-attention.
+    """
+    batch_size, target_length = input_ids_shape
+    mask = torch.full((target_length, target_length), float("-inf"))
+    mask_cond = torch.arange(mask.size(-1))
+    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+    mask = mask.to(device)
+
+    if past_key_values_length > 0:
+        mask = torch.cat([torch.zeros(target_length, past_key_values_length, dtype=mask.dtype, device=mask.device), mask], dim=-1)
+    return mask[None, None, :, :].expand(batch_size, 1, target_length, target_length + past_key_values_length)
+
+def _expand_mask(mask: torch.Tensor, tgt_length: int) -> torch.BoolTensor:
+    """
+    Expands attention_mask from `[batch_size, src_length]` to `[batch_size, 1, tgt_length, src_length]`.
+    """
+    batch_size, src_length = mask.shape
+    tgt_length = tgt_length if tgt_length is not None else src_length
+
+    expanded_mask = mask[:, None, None, :].expand(batch_size, 1, tgt_length, src_length).to(torch.bool)
+    return expanded_mask
+
+# 为兼容性添加别名
+_make_causal_mask_opt = _make_causal_mask
+_expand_mask_opt = _expand_mask
 
 logger = logging.get_logger(__name__)
 _SUPPORTED_GPT_MODELS = (
@@ -206,20 +233,20 @@ def _convert_bloom_causal_lm_to_prefix_lm(model: BloomForCausalLM) -> BloomForCa
         device = attention_mask.device
         (_, src_length) = input_shape
         if src_length > 1:
-            combined_attention_mask = _make_causal_mask_bloom(
+            combined_attention_mask = _make_causal_mask_opt(
                 input_shape,
                 device=device,
                 past_key_values_length=past_key_values_length,
             )
             if bidirectional_mask is not None:
                 assert attention_mask.shape == bidirectional_mask.shape
-                expanded_bidirectional_mask = _expand_mask_bloom(
+                expanded_bidirectional_mask = _expand_mask_opt(
                     bidirectional_mask, tgt_length=src_length
                 )
                 combined_attention_mask = torch.logical_and(
                     combined_attention_mask, expanded_bidirectional_mask
                 )
-        expanded_attn_mask = _expand_mask_bloom(attention_mask, tgt_length=src_length)
+        expanded_attn_mask = _expand_mask_opt(attention_mask, tgt_length=src_length)
         combined_attention_mask = (
             expanded_attn_mask
             if combined_attention_mask is None

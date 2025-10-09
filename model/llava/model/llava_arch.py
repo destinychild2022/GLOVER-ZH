@@ -32,8 +32,19 @@ class LlavaMetaModel:
 
     def initialize_vision_modules(self, model_args, fsdp=None):
         vision_tower = model_args.vision_tower
-        mm_vision_select_layer = model_args.mm_vision_select_layer
-        mm_vision_select_feature = model_args.mm_vision_select_feature
+        # 兼容Qwen2.5-VL配置
+        if hasattr(model_args, 'mm_vision_select_layer'):
+            mm_vision_select_layer = model_args.mm_vision_select_layer
+        elif hasattr(model_args, 'mm_vision_select_feature'):
+            mm_vision_select_layer = model_args.mm_vision_select_feature
+        else:
+            mm_vision_select_layer = -2  # 默认值
+        
+        # 兼容Qwen2.5-VL配置
+        if hasattr(model_args, 'mm_vision_select_feature'):
+            mm_vision_select_feature = model_args.mm_vision_select_feature
+        else:
+            mm_vision_select_feature = "patch"  # 默认值
         pretrain_mm_mlp_adapter = model_args.pretrain_mm_mlp_adapter
 
         self.config.mm_vision_tower = vision_tower

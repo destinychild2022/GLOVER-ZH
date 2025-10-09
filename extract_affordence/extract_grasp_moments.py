@@ -64,15 +64,26 @@ class GraspMomentExtractor:
         self.camera_intrinsics = {}
         self.camera_extrinsics = {}
         
-        # 加载相机参数
-        self.load_camera_parameters()
+        # 定义坐标系统变换矩阵（Y和Z轴反射变换）
+        self.COORDSYS_TRANSFORM = np.array([
+            [1, 0, 0, 0],
+            [0, -1, 0, 0],  # Y轴反射
+            [0, 0, -1, 0],  # Z轴反射
+            [0, 0, 0, 1]
+        ])
+        
+        # 相机参数将在每个episode中动态加载
     
-    def load_camera_parameters(self):
+    def load_camera_parameters(self, episode_path: str = None):
         """加载相机参数"""
         print("开始加载相机参数...")
         
-        # 使用已知的相机参数路径
-        param_dir = Path("/mnt/data-oss/rap-prod-bak/AgibotWorld-Challenge/AgiBotWorldChallenge-2025/iros_agibot_sim/2810130/3335440/A2D0015AB00061/12052046/parameters/camera")
+        # 如果提供了episode路径，使用该episode的相机参数
+        if episode_path:
+            param_dir = Path(episode_path) / "parameters" / "camera"
+        else:
+            # 使用已知的相机参数路径作为默认
+            param_dir = Path("/mnt/data-oss/rap-prod-bak/AgibotWorld-Challenge/AgiBotWorldChallenge-2025/iros_agibot_sim/2810130/3335440/A2D0015AB00061/12052046/parameters/camera")
         
         if not param_dir.exists():
             print(f"相机参数目录不存在: {param_dir}")
@@ -116,7 +127,7 @@ class GraspMomentExtractor:
                 except Exception as e:
                     print(f"加载 {camera_name} 内参失败: {e}")
         
-        # 加载外参
+        # 加载外参（按帧加载）
         extrinsic_files = {
             'head': param_dir / 'head_extrinsic_params_aligned.json',
             'hand_left': param_dir / 'hand_left_extrinsic_params_aligned.json',
@@ -129,26 +140,53 @@ class GraspMomentExtractor:
                     with open(extrinsic_file, 'r') as f:
                         extrinsic_data = json.load(f)
                     
-                    if isinstance(extrinsic_data, list) and len(extrinsic_data) > 0:
-                        extrinsic = extrinsic_data[0]['extrinsic']
-                    else:
-                        extrinsic = extrinsic_data['extrinsic']
-                    
-                    rotation_matrix = np.array(extrinsic['rotation_matrix'])
-                    translation_vector = np.array(extrinsic['translation_vector'])
-                    
+                    # 存储所有帧的外参数据
                     self.camera_extrinsics[camera_name] = {
-                        'rotation': rotation_matrix,
-                        'translation': translation_vector
+                        'all_frames': extrinsic_data,
+                        'current_frame': 0  # 默认使用第0帧
                     }
                     
-                    print(f"加载 {camera_name} 外参: 旋转矩阵形状={rotation_matrix.shape}, 平移向量={translation_vector}")
+                    print(f"加载 {camera_name} 外参数据: {len(extrinsic_data)} 帧")
                     
                 except Exception as e:
                     print(f"加载 {camera_name} 外参失败: {e}")
         
         print(f"成功加载 {len(self.camera_intrinsics)} 个相机的内参")
         print(f"成功加载 {len(self.camera_extrinsics)} 个相机的外参")
+    
+    def load_camera_parameters_for_frame(self, camera_name: str, frame_idx: int):
+        """加载指定帧的相机外参"""
+        if camera_name not in self.camera_extrinsics:
+            return False
+        
+        extrinsic_data = self.camera_extrinsics[camera_name]['all_frames']
+        
+        if frame_idx >= len(extrinsic_data):
+            print(f"警告: 帧索引 {frame_idx} 超出范围 [0, {len(extrinsic_data)-1}]，使用第0帧")
+            frame_idx = 0
+        
+        extrinsic = extrinsic_data[frame_idx]['extrinsic']
+        rotation_matrix = np.array(extrinsic['rotation_matrix'])
+        translation_vector = np.array(extrinsic['translation_vector'])
+        
+        # 构建4x4相机外参矩阵
+        camera_extrinsic = np.eye(4)
+        camera_extrinsic[:3, :3] = rotation_matrix
+        camera_extrinsic[:3, 3] = translation_vector
+        
+        # 应用坐标系统变换矩阵
+        camera_extrinsic = camera_extrinsic @ self.COORDSYS_TRANSFORM
+        
+        # 提取变换后的旋转矩阵和平移向量
+        rotation_matrix_transformed = camera_extrinsic[:3, :3]
+        translation_vector_transformed = camera_extrinsic[:3, 3]
+        
+        # 更新当前帧的外参
+        self.camera_extrinsics[camera_name]['current_rotation'] = rotation_matrix_transformed
+        self.camera_extrinsics[camera_name]['current_translation'] = translation_vector_transformed
+        self.camera_extrinsics[camera_name]['current_frame'] = frame_idx
+        
+        return True
     
     def setup_default_camera_parameters(self):
         """设置默认相机参数"""
@@ -172,11 +210,36 @@ class GraspMomentExtractor:
             print(f"警告: 未找到相机 {camera_name} 的外参，使用默认变换")
             return point_world
         
-        extrinsics = self.camera_extrinsics[camera_name]
-        R = extrinsics['rotation']
-        t = extrinsics['translation']
+        # 使用当前帧的外参
+        if 'current_rotation' not in self.camera_extrinsics[camera_name]:
+            print(f"警告: 相机 {camera_name} 未加载当前帧外参，使用第0帧")
+            self.load_camera_parameters_for_frame(camera_name, 0)
         
-        point_camera = R @ point_world + t
+        R = self.camera_extrinsics[camera_name]['current_rotation']
+        t = self.camera_extrinsics[camera_name]['current_translation']
+        
+        # 将3D点转换为齐次坐标
+        point_homogeneous = np.append(point_world, 1.0)
+        
+        # 计算从世界到相机的变换矩阵（外参矩阵的逆）
+        try:
+            camera_extrinsic = np.eye(4)
+            camera_extrinsic[:3, :3] = R
+            camera_extrinsic[:3, 3] = t
+            inv_camera_extrinsic = np.linalg.inv(camera_extrinsic)
+        except np.linalg.LinAlgError:
+            print("警告: 外参矩阵不可逆，使用伪逆")
+            inv_camera_extrinsic = np.linalg.pinv(camera_extrinsic)
+        
+        # 应用变换
+        point_camera_homogeneous = inv_camera_extrinsic @ point_homogeneous
+        point_camera = point_camera_homogeneous[:3]
+        
+        # 检查点是否在相机前方
+        if point_camera[2] <= 0:
+            print(f"错误: 点 {point_world} 在相机 {camera_name} 后方(深度Z = {point_camera[2]:.4f})")
+            return point_camera
+        
         return point_camera
     
     def camera_to_image(self, point_camera: np.ndarray, camera_name: str) -> Tuple[int, int]:
@@ -194,13 +257,16 @@ class GraspMomentExtractor:
         
         return (x, y)
     
-    def project_3d_to_2d(self, point_3d: np.ndarray, camera_name: str) -> Tuple[int, int]:
-        """将3D点投影到2D图像坐标"""
+    def project_3d_to_2d_with_frame(self, point_3d: np.ndarray, camera_name: str, frame_idx: int) -> Tuple[int, int]:
+        """将3D点投影到2D图像坐标（使用指定帧的外参）"""
+        # 加载指定帧的外参
+        self.load_camera_parameters_for_frame(camera_name, frame_idx)
+        
         try:
             point_camera = self.world_to_camera(point_3d, camera_name)
             
             if point_camera[2] <= 0:
-                print(f"警告: 点 {point_3d} 在相机 {camera_name} 后方")
+                print(f"错误: 点 {point_3d} 在相机 {camera_name} 后方，无法投影")
                 intrinsics = self.camera_intrinsics[camera_name]
                 return (int(intrinsics['cx']), int(intrinsics['cy']))
             
@@ -218,16 +284,22 @@ class GraspMomentExtractor:
             in_fov = (0 <= x < max_width) and (0 <= y < max_height)
             
             if not in_fov:
-                print(f"警告: 点 {point_3d} 超出 {camera_name} 相机视野范围")
+                print(f"警告: 点 {point_3d} 投影到 {camera_name} 相机坐标 ({x}, {y}) 超出视野范围 ({max_width}x{max_height})")
                 # 返回图像中心作为fallback
-                return (max_width // 2, max_height // 2)
+                fallback_point = (max_width // 2, max_height // 2)
+                return fallback_point
             
+            print(f"✓ {camera_name} 相机投影成功: 3D点 {point_3d} -> 2D坐标 ({x}, {y})")
             return (x, y)
             
         except Exception as e:
             print(f"投影失败: {e}")
             intrinsics = self.camera_intrinsics[camera_name]
             return (int(intrinsics['cx']), int(intrinsics['cy']))
+    
+    def project_3d_to_2d(self, point_3d: np.ndarray, camera_name: str) -> Tuple[int, int]:
+        """将3D点投影到2D图像坐标（使用当前帧的外参）"""
+        return self.project_3d_to_2d_with_frame(point_3d, camera_name, 0)
     
     def select_best_camera(self, point_3d: np.ndarray) -> str:
         """选择最佳相机视角"""
@@ -501,6 +573,9 @@ class GraspMomentExtractor:
         """处理单个episode的抓取时刻数据"""
         grasp_data = []
         
+        print(f"  - 处理episode: {episode_id}")
+        print(f"  - episode路径: {episode_dir}")
+        
         # 查找trial目录
         trial_dirs = []
         for item in episode_dir.iterdir():
@@ -526,6 +601,11 @@ class GraspMomentExtractor:
         
         trial_data_root_dir = trial_data_root_dirs[0]
         print(f"  - 找到trial数据根目录: {trial_data_root_dir.name}")
+        
+        # 加载对应episode的相机参数
+        episode_path = str(trial_data_root_dir)
+        print(f"  - 加载episode相机参数: {episode_path}")
+        self.load_camera_parameters(episode_path)
         
         # 加载机械臂数据
         h5_data = self.load_h5_data(trial_data_root_dir)
@@ -574,9 +654,9 @@ class GraspMomentExtractor:
                 print(f"    - 跳过抓取时刻 {grasp_idx}: 缺少图像")
                 continue
             
-            # 将3D位姿投影到2D图像坐标
-            affordance_point = self.project_3d_to_2d(position, best_camera)
-            head_affordance_point = self.project_3d_to_2d(position, 'head')
+            # 将3D位姿投影到2D图像坐标（使用抓取时刻对应的帧外参）
+            affordance_point = self.project_3d_to_2d_with_frame(position, best_camera, grasp_idx)
+            head_affordance_point = self.project_3d_to_2d_with_frame(position, 'head', grasp_idx)
             
             # 检查投影是否有效
             if best_camera == 'head':
@@ -709,37 +789,94 @@ class GraspMomentExtractor:
             pre_grasp_path = self.output_dir / "images" / pre_grasp_filename
             cv2.imwrite(str(pre_grasp_path), cv2.cvtColor(data.pre_grasp_image, cv2.COLOR_RGB2BGR))
             
+            # 保存带标记点的抓取前图像
+            pre_grasp_marked = data.pre_grasp_image.copy()
+            x, y = data.affordance_point
+            cv2.circle(pre_grasp_marked, (x, y), 10, (255, 0, 0), 2)  # 红色圆圈
+            pre_grasp_marked_filename = f"{task_id}_{data.episode_id}_pregrasp_marked_{i:03d}.jpg"
+            pre_grasp_marked_path = self.output_dir / "images" / pre_grasp_marked_filename
+            cv2.imwrite(str(pre_grasp_marked_path), cv2.cvtColor(pre_grasp_marked, cv2.COLOR_RGB2BGR))
+            
             # 保存稳定闭合后图像
             stable_close_filename = f"{task_id}_{data.episode_id}_stable_close_{i:03d}.jpg"
             stable_close_path = self.output_dir / "images" / stable_close_filename
             cv2.imwrite(str(stable_close_path), cv2.cvtColor(data.stable_close_image, cv2.COLOR_RGB2BGR))
+            
+            # 保存带标记点的稳定闭合后图像
+            stable_close_marked = data.stable_close_image.copy()
+            x, y = data.affordance_point
+            cv2.circle(stable_close_marked, (x, y), 10, (255, 0, 0), 2)  # 红色圆圈
+            stable_close_marked_filename = f"{task_id}_{data.episode_id}_stable_close_marked_{i:03d}.jpg"
+            stable_close_marked_path = self.output_dir / "images" / stable_close_marked_filename
+            cv2.imwrite(str(stable_close_marked_path), cv2.cvtColor(stable_close_marked, cv2.COLOR_RGB2BGR))
             
             # 保存头部相机图像
             if data.head_camera_image is not None:
                 head_camera_filename = f"{task_id}_{data.episode_id}_head_camera_{i:03d}.jpg"
                 head_camera_path = self.output_dir / "images" / head_camera_filename
                 cv2.imwrite(str(head_camera_path), cv2.cvtColor(data.head_camera_image, cv2.COLOR_RGB2BGR))
+                
+                # 保存带标记点的头部相机图像
+                head_camera_marked = data.head_camera_image.copy()
+                head_x, head_y = data.head_affordance_point
+                cv2.circle(head_camera_marked, (head_x, head_y), 15, (255, 0, 0), 3)  # 红色圆圈
+                head_camera_marked_filename = f"{task_id}_{data.episode_id}_head_camera_marked_{i:03d}.jpg"
+                head_camera_marked_path = self.output_dir / "images" / head_camera_marked_filename
+                cv2.imwrite(str(head_camera_marked_path), cv2.cvtColor(head_camera_marked, cv2.COLOR_RGB2BGR))
             
             # 保存第一帧头部相机图像
             if data.first_frame_head_image is not None:
                 first_frame_head_filename = f"{task_id}_{data.episode_id}_first_frame_head_camera_{i:03d}.jpg"
                 first_frame_head_path = self.output_dir / "images" / first_frame_head_filename
                 cv2.imwrite(str(first_frame_head_path), cv2.cvtColor(data.first_frame_head_image, cv2.COLOR_RGB2BGR))
+                
+                # 保存带标记点的第一帧头部相机图像
+                first_frame_head_marked = data.first_frame_head_image.copy()
+                head_x, head_y = data.head_affordance_point
+                cv2.circle(first_frame_head_marked, (head_x, head_y), 15, (255, 0, 0), 3)  # 红色圆圈
+                # 添加位姿信息文本
+                pos = data.end_effector_position
+                orient = data.end_effector_orientation
+                pose_text = f'Pos: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})'
+                cv2.putText(first_frame_head_marked, pose_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                first_frame_head_marked_filename = f"{task_id}_{data.episode_id}_first_frame_head_camera_marked_{i:03d}.jpg"
+                first_frame_head_marked_path = self.output_dir / "images" / first_frame_head_marked_filename
+                cv2.imwrite(str(first_frame_head_marked_path), cv2.cvtColor(first_frame_head_marked, cv2.COLOR_RGB2BGR))
             
-            # 保存affordance掩码
+            # 保存affordance掩码 - 统一使用头部视角的带抓取点图片
             mask_filename = f"{task_id}_{data.episode_id}_mask_{i:03d}.png"
             mask_path = self.output_dir / "masks" / mask_filename
-            cv2.imwrite(str(mask_path), data.affordance_mask)
+            
+            # 优先使用头部相机图像，如果没有则使用第一帧头部图像
+            if data.head_camera_image is not None:
+                mask_image = data.head_camera_image.copy()
+                head_x, head_y = data.head_affordance_point
+                cv2.circle(mask_image, (head_x, head_y), 15, (255, 0, 0), 3)  # 红色圆圈
+            elif data.first_frame_head_image is not None:
+                mask_image = data.first_frame_head_image.copy()
+                head_x, head_y = data.head_affordance_point
+                cv2.circle(mask_image, (head_x, head_y), 15, (255, 0, 0), 3)  # 红色圆圈
+            else:
+                # 如果都没有头部图像，使用机械臂相机图像
+                mask_image = data.pre_grasp_image.copy()
+                x, y = data.affordance_point
+                cv2.circle(mask_image, (x, y), 10, (255, 0, 0), 2)  # 红色圆圈
+            
+            cv2.imwrite(str(mask_path), cv2.cvtColor(mask_image, cv2.COLOR_RGB2BGR))
         
         # 保存标注数据
         annotations = []
         for i, data in enumerate(grasp_data):
             annotation = {
                 'pregrasp_image': f"{task_id}_{data.episode_id}_pregrasp_{i:03d}.jpg",
+                'pregrasp_marked_image': f"{task_id}_{data.episode_id}_pregrasp_marked_{i:03d}.jpg",
                 'stable_close_image': f"{task_id}_{data.episode_id}_stable_close_{i:03d}.jpg" if data.stable_close_image is not None else None,
+                'stable_close_marked_image': f"{task_id}_{data.episode_id}_stable_close_marked_{i:03d}.jpg" if data.stable_close_image is not None else None,
                 'head_camera_image': f"{task_id}_{data.episode_id}_head_camera_{i:03d}.jpg" if data.head_camera_image is not None else None,
+                'head_camera_marked_image': f"{task_id}_{data.episode_id}_head_camera_marked_{i:03d}.jpg" if data.head_camera_image is not None else None,
                 'first_frame_head_image': f"{task_id}_{data.episode_id}_first_frame_head_camera_{i:03d}.jpg" if data.first_frame_head_image is not None else None,
-                'mask_image': f"{task_id}_{data.episode_id}_mask_{i:03d}.png",
+                'first_frame_head_marked_image': f"{task_id}_{data.episode_id}_first_frame_head_camera_marked_{i:03d}.jpg" if data.first_frame_head_image is not None else None,
+                'mask_image': f"{task_id}_{data.episode_id}_mask_{i:03d}.png",  # 带标记点的图像（优先头部视角）
                 'affordance_point': list(data.affordance_point),
                 'head_affordance_point': list(data.head_affordance_point) if data.head_affordance_point is not None else None,
                 'position_3d': data.end_effector_position.tolist(),
@@ -761,8 +898,19 @@ class GraspMomentExtractor:
         # 创建可视化
         self.create_visualization(grasp_data, task_id)
     
-    def extract_all(self, max_tasks: Optional[int] = None, max_episodes_per_task: Optional[int] = None):
+    def extract_all(self, max_tasks: Optional[int] = None, max_episodes_per_task: Optional[int] = None, specific_tasks: Optional[List[str]] = None):
         """提取所有任务的抓取时刻数据"""
+        
+        print(f"开始扫描数据根目录: {self.data_root}")
+        print(f"数据根目录是否存在: {self.data_root.exists()}")
+        
+        if self.data_root.exists():
+            print(f"数据根目录内容:")
+            for item in self.data_root.iterdir():
+                if item.is_dir():
+                    print(f"  - {item.name} (目录)")
+                else:
+                    print(f"  - {item.name} (文件)")
         
         task_dirs = []
         for task_dir in self.data_root.iterdir():
@@ -770,6 +918,12 @@ class GraspMomentExtractor:
                 task_dirs.append(task_dir)
         
         task_dirs.sort()
+        print(f"找到 {len(task_dirs)} 个任务目录: {[d.name for d in task_dirs]}")
+        
+        # 如果指定了特定任务，只处理这些任务
+        if specific_tasks:
+            task_dirs = [task_dir for task_dir in task_dirs if task_dir.name in specific_tasks]
+            print(f"指定处理任务: {specific_tasks}")
         
         if max_tasks:
             task_dirs = task_dirs[:max_tasks]
@@ -779,13 +933,16 @@ class GraspMomentExtractor:
         for task_dir in tqdm(task_dirs, desc="Processing tasks"):
             task_id = task_dir.name
             print(f"\nProcessing task {task_id}")
+            print(f"任务目录路径: {task_dir}")
             
+            # 在task_dir下直接查找episode目录（如3335440等）
             episode_dirs = []
             for episode_dir in task_dir.iterdir():
                 if episode_dir.is_dir() and episode_dir.name.isdigit():
                     episode_dirs.append(episode_dir)
             
             episode_dirs.sort()
+            print(f"找到 {len(episode_dirs)} 个episode目录: {[d.name for d in episode_dirs]}")
             
             if max_episodes_per_task:
                 episode_dirs = episode_dirs[:max_episodes_per_task]
@@ -826,6 +983,8 @@ def main():
                        help="Maximum number of tasks to process")
     parser.add_argument("--max_episodes_per_task", type=int, default=None,
                        help="Maximum number of episodes per task to process")
+    parser.add_argument("--specific_tasks", type=str, nargs='+', default=None,
+                       help="Specific task IDs to process")
     
     args = parser.parse_args()
     
@@ -833,7 +992,7 @@ def main():
     extractor = GraspMomentExtractor(args.data_root, args.output_dir)
     
     # 开始提取
-    extractor.extract_all(args.max_tasks, args.max_episodes_per_task)
+    extractor.extract_all(args.max_tasks, args.max_episodes_per_task, args.specific_tasks)
 
 
 if __name__ == "__main__":

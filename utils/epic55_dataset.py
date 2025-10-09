@@ -17,7 +17,9 @@ from model.segment_anything.utils.transforms import ResizeLongestSide
 from .utils import ANSWER_LIST, SHORT_QUESTION_LIST
 
 def init_epic55(base_image_dir):
-    with open("annotations/train/epic55.json", "r") as f:
+    # 构建正确的annotations路径
+    annotations_dir = os.path.join(os.path.dirname(base_image_dir), "annotations", "train", "epic55.json")
+    with open(annotations_dir, "r") as f:
         epic_annos = json.load(f)
 
     epic_questions = []

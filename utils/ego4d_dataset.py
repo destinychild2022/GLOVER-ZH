@@ -14,11 +14,13 @@ import pdb
 from model.llava import conversation as conversation_lib
 from model.segment_anything.utils.transforms import ResizeLongestSide
 
-from .utils import ANSWER_LIST, SHORT_QUESTION_LIST
+from .utils import ANSWER_LIST, SHORT_QUESTION_LIST, ENHANCED_ANSWER_LIST
 
 
 def init_ego4d(base_image_dir):
-    with open("annotations/train/ego4d.json", "r") as f:
+    # 构建正确的annotations路径
+    annotations_dir = os.path.join(os.path.dirname(base_image_dir), "annotations", "train", "ego4d.json")
+    with open(annotations_dir, "r") as f:
         ego4d_annos = json.load(f)
 
     ego4d_questions = []
@@ -51,7 +53,8 @@ def init_ego4d(base_image_dir):
 
         question = f"<image>\nWhere should I interact with the {selected_obj} to {selected_act} it?"
         questions = question + " Please output segmentation mask."
-        answers = "You can interact with the highlighted area" + " " + "[SEG]" + "."
+        # 使用增强的答案格式，让[SEG] token更明确地表示分割任务
+        answers = random.choice(ENHANCED_ANSWER_LIST)
 
         ego4d_questions.append(questions)
         ego4d_answers.append(answers)
@@ -63,7 +66,7 @@ def init_ego4d(base_image_dir):
 class Ego4DDataset(torch.utils.data.Dataset):
     pixel_mean = torch.Tensor([123.675, 116.28, 103.53]).view(-1, 1, 1)
     pixel_std = torch.Tensor([58.395, 57.12, 57.375]).view(-1, 1, 1)
-    img_size = 1024
+    # img_size = 1024  # 移除硬编码，使用传入的image_size参数
     ignore_label = 255
 
     def __init__(
@@ -114,8 +117,8 @@ class Ego4DDataset(torch.utils.data.Dataset):
 
         # Pad
         h, w = x.shape[-2:]
-        padh = self.img_size - h
-        padw = self.img_size - w
+        padh = self.image_size - h
+        padw = self.image_size - w
         x = F.pad(x, (0, padw, 0, padh))
         return x
 
@@ -151,6 +154,17 @@ class Ego4DDataset(torch.utils.data.Dataset):
         conversations.append(conv.get_prompt())
 
         image = self.preprocess(torch.from_numpy(image).permute(2, 0, 1).contiguous())
+        
+        # 根据precision设置数据类型
+        if self.precision == "fp16":
+            image = image.half()
+            image_clip = image_clip.half()
+        elif self.precision == "bf16":
+            image = image.bfloat16()
+            image_clip = image_clip.bfloat16()
+        else:
+            image = image.float()
+            image_clip = image_clip.float()
 
         masks = torch.from_numpy(label / 255.0)
         masks = masks.unsqueeze(0)

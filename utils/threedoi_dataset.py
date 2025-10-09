@@ -48,7 +48,7 @@ def init_3doi(base_image_dir):
 class DoiDataset(torch.utils.data.Dataset):
     pixel_mean = torch.Tensor([123.675, 116.28, 103.53]).view(-1, 1, 1)
     pixel_std = torch.Tensor([58.395, 57.12, 57.375]).view(-1, 1, 1)
-    img_size = 1024
+    # img_size = 1024  # 移除硬编码，使用传入的image_size参数
     ignore_label = 255
 
     def __init__(
@@ -68,7 +68,16 @@ class DoiDataset(torch.utils.data.Dataset):
         self.tokenizer = tokenizer
         self.precision = precision
         self.transform = ResizeLongestSide(image_size)
-        self.clip_image_processor = CLIPImageProcessor.from_pretrained(vision_tower)
+        # 对于Qwen2.5-VL，使用内置的图像处理器
+        if "qwen" in vision_tower.lower() or "Qwen" in vision_tower:
+            print(f"检测到Qwen模型，使用Qwen2.5-VL内置图像处理器")
+            # 使用Qwen2.5-VL的图像处理器
+            from transformers import Qwen2VLImageProcessor
+            self.clip_image_processor = Qwen2VLImageProcessor.from_pretrained(vision_tower)
+        else:
+            print(f"使用CLIP图像处理器")
+            # 对于其他模型，使用CLIP图像处理器
+            self.clip_image_processor = CLIPImageProcessor.from_pretrained(vision_tower)
 
         self.short_question_list = SHORT_QUESTION_LIST
         self.answer_list = ANSWER_LIST
@@ -94,8 +103,8 @@ class DoiDataset(torch.utils.data.Dataset):
 
         # Pad
         h, w = x.shape[-2:]
-        padh = self.img_size - h
-        padw = self.img_size - w
+        padh = self.image_size - h
+        padw = self.image_size - w
         x = F.pad(x, (0, padw, 0, padh))
         return x
 
@@ -133,6 +142,17 @@ class DoiDataset(torch.utils.data.Dataset):
         conversations.append(conv.get_prompt())
 
         image = self.preprocess(torch.from_numpy(image).permute(2, 0, 1).contiguous())
+        
+        # 根据precision设置数据类型
+        if self.precision == "fp16":
+            image = image.half()
+            image_clip = image_clip.half()
+        elif self.precision == "bf16":
+            image = image.bfloat16()
+            image_clip = image_clip.bfloat16()
+        else:
+            image = image.float()
+            image_clip = image_clip.float()
 
         masks = torch.from_numpy(label / 255.0)
         masks = masks.unsqueeze(0)
@@ -146,3 +166,4 @@ class DoiDataset(torch.utils.data.Dataset):
             resize,
             question,
         )
+

@@ -42,10 +42,8 @@ swanlog/
 *.pickle
 
 # 训练和推理结果
-inference_results/
 test_output/
 test_argmax_output/
-agd20k_results/
 exp_eval/visualizations/
 qwen_scripts/vis_output/
 qwen_scripts/swanlog/
@@ -81,15 +79,16 @@ Thumbs.db
 !README*.txt
 !*.md
 
-# 图像和视频文件（除了示例图片）
+# 图像和视频文件（除了示例图片和结果图片）
 *.jpg
 *.jpeg
-*.png
 *.gif
 *.mp4
 *.avi
 *.mov
 !images/*.png  # 保留示例图片
+!agd20k_results/visualizations/*.png  # 保留评估结果图片
+!inference_results/*.png  # 保留推理结果图片
 
 # 模型文件
 *.model

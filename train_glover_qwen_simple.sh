@@ -9,13 +9,13 @@ deepspeed --include localhost:0,1,2 --master_port=23914 train_glover_qwen_simple
   --vision-tower="/mnt/data-oss/rap-prod-bak/GLOVER/model/Qwen-7B-VL" \
   --sam_vit_path="/mnt/data-oss/rap-prod-bak/GLOVER/model/SAM-vit-h/sam_vit_h_4b8939.pth" \
   --dataset_dir="/mnt/data-oss/rap-prod-bak/GLOVER/dataset/HOVA-500K" \
-  --dataset="3doi" \
+  --dataset="handal" \
   --sample_rates="1" \
-  --exp_name="glover_qwen" \
+  --exp_name="glover_qwen_handal" \
   --log_base_dir="/mnt/data-oss/data-cpfs/GLOVER/output" \
-  --vis_save_path="/mnt/data-oss/rap-prod-bak/GLOVER/output/qwen4" \
+  --vis_save_path="/mnt/data-oss/rap-prod-bak/GLOVER/output/qwen_handal2" \
   --model_arch="glover_qwen" \
-  --lr=0.001 \
+  --lr=0.0001 \
   --epochs=10 \
   --batch_size=8 \
   --steps_per_epoch=196 \
@@ -23,7 +23,7 @@ deepspeed --include localhost:0,1,2 --master_port=23914 train_glover_qwen_simple
          --precision="bf16" \
   --use_mm_start_end \
   --conv_type="llava_v1" \
-  --ce_loss_weight=1.0 \
+  --ce_loss_weight=0.1 \
   --dice_loss_weight=0.5 \
   --bce_loss_weight=2.0 \
   --use_text_emb_in_suffix_sam \

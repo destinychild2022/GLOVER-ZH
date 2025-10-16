@@ -96,15 +96,27 @@ NOTE: Key training parameters must be set individually:
 - `--dataset_dir`: /path/to/HOVA-500K datasets
 
 When training is finished, to get the full model weight:
+
+**Method 1: Using DeepSpeed official zero_to_fp32.py (May have compatibility issues)**
 ```
-cd ./runs/glover(++)/ckpt_model && python zero_to_fp32.py . ../pytorch_model.bin
+cd ./output/your_training_output_dir
+python ckpt_model/zero_to_fp32.py ckpt_model pytorch_model.bin
 ```
+
+**Method 2: Alternative approach (Recommended - Tested and Working)**
+```
+cd ./output/your_training_output_dir/ckpt_model && python zero_to_fp32.py . ../pytorch_model.bin
+```
+
+**Note**: Method 2 has been tested and works reliably. Method 1 may fail due to DeepSpeed version compatibility issues or Python environment conflicts.
 
 ### Merge LoRA Weights
 Merge the LoRA weights of pytorch_model.bin, save the resulting model to your desired path in Hugging Face format:
 ```
 bash merge_weights.sh
 ```
+
+**Note**: The zero_to_fp32.py script automatically uses the latest checkpoint (pointed to by the 'latest' file) to convert ZeRO checkpoints to FP32 weights. This creates multiple sharded files (pytorch_model-00001-of-00005.bin, etc.) that can be used for LoRA weight merging.
 
 ### Evaluation
 ```

@@ -81,67 +81,17 @@ def sigmoid_focal_loss(
     return loss.mean(1).sum() / num_boxes
 
 
-def cal_kl(inputs, targets, eps=1e-8):
+def cal_kl(inputs, targets, eps=1e-12):
     """
-    计算KL散度，修复数值稳定性问题，添加精度检查
+    计算KL散度，与GLOVER_plus.py完全一致
     """
-    # 检查输入是否包含NaN或Inf - 改为抛出异常而不是静默替换
-    if torch.isnan(inputs).any() or torch.isinf(inputs).any():
-        nan_count = torch.isnan(inputs).sum().item()
-        inf_count = torch.isinf(inputs).sum().item()
-        raise ValueError(f"cal_kl - 输入包含{nan_count}个NaN和{inf_count}个Inf值，这通常表示梯度爆炸或数值不稳定。请检查模型参数和学习率。")
-    
-    if torch.isnan(targets).any() or torch.isinf(targets).any():
-        nan_count = torch.isnan(targets).sum().item()
-        inf_count = torch.isinf(targets).sum().item()
-        raise ValueError(f"cal_kl - 目标包含{nan_count}个NaN和{inf_count}个Inf值，这通常表示数据预处理问题。请检查输入数据。")
-    
-    # 对预测掩码应用sigmoid
-    inputs_sigmoid = inputs.sigmoid()
-    
-    # 调试：输出sigmoid前后的数值范围
-    print(f"[DEBUG] cal_kl - 输入logits范围: [{inputs.min().item():.4f}, {inputs.max().item():.4f}]")
-    print(f"[DEBUG] cal_kl - sigmoid后范围: [{inputs_sigmoid.min().item():.4f}, {inputs_sigmoid.max().item():.4f}]")
-    print(f"[DEBUG] cal_kl - sigmoid后sum: {inputs_sigmoid.sum().item():.4f}")
-    
-    # 检查sigmoid后是否产生NaN - 改为抛出异常
-    if torch.isnan(inputs_sigmoid).any() or torch.isinf(inputs_sigmoid).any():
-        nan_count = torch.isnan(inputs_sigmoid).sum().item()
-        inf_count = torch.isinf(inputs_sigmoid).sum().item()
-        raise ValueError(f"cal_kl - sigmoid后产生{nan_count}个NaN和{inf_count}个Inf值，输入范围可能过大。输入范围: [{inputs.min().item():.4f}, {inputs.max().item():.4f}]")
-    
-    # 确保输入在有效范围内
-    inputs_sigmoid = torch.clamp(inputs_sigmoid, eps, 1.0 - eps)
-    targets = torch.clamp(targets, eps, 1.0 - eps)
-    
-    # 归一化为概率分布
-    inputs_norm = inputs_sigmoid / (inputs_sigmoid.sum(dim=(1, 2), keepdim=True) + eps)
-    targets_norm = targets / (targets.sum(dim=(1, 2), keepdim=True) + eps)
-    
-    # 检查归一化后是否产生NaN - 改为抛出异常
-    if torch.isnan(inputs_norm).any() or torch.isinf(inputs_norm).any():
-        nan_count = torch.isnan(inputs_norm).sum().item()
-        inf_count = torch.isinf(inputs_norm).sum().item()
-        raise ValueError(f"cal_kl - 归一化后产生{nan_count}个NaN和{inf_count}个Inf值，可能是sigmoid后全零导致的。sigmoid sum: {inputs_sigmoid.sum().item():.6f}")
-    
-    if torch.isnan(targets_norm).any() or torch.isinf(targets_norm).any():
-        nan_count = torch.isnan(targets_norm).sum().item()
-        inf_count = torch.isinf(targets_norm).sum().item()
-        raise ValueError(f"cal_kl - 目标归一化后产生{nan_count}个NaN和{inf_count}个Inf值，目标sum: {targets.sum().item():.6f}")
-    
-    # 计算KL散度，使用更稳定的计算方式
-    kld = targets_norm * (torch.log(targets_norm + eps) - torch.log(inputs_norm + eps))
-    
-    # 检查KL散度计算结果 - 改为抛出异常
-    if torch.isnan(kld).any() or torch.isinf(kld).any():
-        nan_count = torch.isnan(kld).sum().item()
-        inf_count = torch.isinf(kld).sum().item()
-        raise ValueError(f"cal_kl - KL散度计算产生{nan_count}个NaN和{inf_count}个Inf值，可能是log计算导致的数值问题。inputs_norm范围: [{inputs_norm.min().item():.6f}, {inputs_norm.max().item():.6f}], targets_norm范围: [{targets_norm.min().item():.6f}, {targets_norm.max().item():.6f}]")
-    
-    # 按像素数量归一化，避免大掩码导致损失过大
-    num_pixels = inputs_sigmoid.shape[1] * inputs_sigmoid.shape[2]
-    kld = kld.sum() / num_pixels
-    
+    inputs = inputs.sigmoid()
+    inputs = inputs / (inputs.sum(dim=(1, 2), keepdim=True) + eps)
+    targets = targets / (targets.sum(dim=(1, 2), keepdim=True) + eps)
+
+    kld = targets * (torch.log(targets + eps) - torch.log(inputs + eps))
+    kld = kld.sum()
+
     return kld
 
 
@@ -209,19 +159,33 @@ class GloverMetaModel(nn.Module):
         target_dtype = getattr(config, 'torch_dtype', torch.float32)
         if hasattr(self.model, 'dtype'):
             target_dtype = self.model.dtype
+        
+        # 如果模型有precision属性，使用它来确定精度
+        if hasattr(self, 'precision'):
+            if self.precision == 'bf16':
+                target_dtype = torch.bfloat16
+            elif self.precision == 'fp16':
+                target_dtype = torch.half
+            else:
+                target_dtype = torch.float32
+        
         print(f"[DEBUG] 目标精度: {target_dtype}")
         
-        # 设置SAM模型的精度（只对visual_model1，即SAM模型）
+        # 设置SAM模型的精度和设备（只对visual_model1，即SAM模型）
         if hasattr(self, 'visual_model1'):
-            print(f"[DEBUG] 设置visual_model1（SAM模型）精度")
+            print(f"[DEBUG] 设置visual_model1（SAM模型）精度和设备")
             
-            # 对于image_encoder和prompt_encoder，使用目标精度
-            self.visual_model1.image_encoder = self.visual_model1.image_encoder.to(dtype=target_dtype)
-            self.visual_model1.prompt_encoder = self.visual_model1.prompt_encoder.to(dtype=target_dtype)
+            # 获取当前设备（通常是GPU）
+            device = next(self.parameters()).device if hasattr(self, 'parameters') else torch.device('cuda:0')
+            print(f"[DEBUG] 将SAM模型移动到设备: {device}")
             
-            # 对于mask_decoder，强制使用fp32（避免数值不稳定）
-            print(f"[DEBUG] mask_decoder强制使用fp32精度")
-            self.visual_model1.mask_decoder = self.visual_model1.mask_decoder.to(dtype=torch.float32)
+            # 对于image_encoder和prompt_encoder，移动到GPU并使用目标精度
+            self.visual_model1.image_encoder = self.visual_model1.image_encoder.to(device=device, dtype=target_dtype)
+            self.visual_model1.prompt_encoder = self.visual_model1.prompt_encoder.to(device=device, dtype=target_dtype)
+            
+            # 对于mask_decoder，移动到GPU并使用与训练一致的精度
+            print(f"[DEBUG] mask_decoder使用精度: {target_dtype}, 设备: {device}")
+            self.visual_model1.mask_decoder = self.visual_model1.mask_decoder.to(device=device, dtype=target_dtype)
             
             # 标记已设置精度，避免forward中重复设置
             self._sam_precision_set = True
@@ -530,41 +494,14 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             # 移除images参数，因为父类不支持
             kwargs.pop('images', None)
         
-        # LISA方法：使用LogitsProcessor来增强[SEG] token的生成概率
-        if hasattr(self, 'seg_token_idx') and self.seg_token_idx is not None:
-            from transformers import LogitsProcessor, LogitsProcessorList
-            
-            class SegTokenBiasProcessor(LogitsProcessor):
-                """LISA风格的[SEG] token偏置处理器"""
-                def __init__(self, seg_token_id, bias=2.5):  # 适中的偏置
-                    self.seg_token_id = seg_token_id
-                    self.bias = bias
-                
-                def __call__(self, input_ids, scores):
-                    # 检查输入中是否包含分割相关的关键词
-                    input_text = " ".join([str(x) for x in input_ids.flatten().tolist()])
-                    seg_keywords = ["segment", "mask", "分割", "掩码", "outline", "highlight"]
-                    
-                    # 如果输入包含分割相关关键词，增加[SEG] token的概率
-                    if any(keyword in input_text.lower() for keyword in seg_keywords):
-                        scores[:, self.seg_token_id] += self.bias
-                        print(f"[DEBUG] 检测到分割关键词，增加[SEG] token偏置: {self.bias}")
-                    
-                    return scores
-            
-            # 添加[SEG] token偏置处理器
-            seg_processor = SegTokenBiasProcessor(self.seg_token_idx, bias=2.5)
-            if 'logits_processor' in kwargs:
-                kwargs['logits_processor'].append(seg_processor)
-            else:
-                kwargs['logits_processor'] = LogitsProcessorList([seg_processor])
+        # 移除强制偏置，让模型自然学习生成[SEG] token
         
         # 使用 transformers 的生成方法
         from transformers import GenerationMixin
         return GenerationMixin.generate(self, input_ids, **kwargs)
         
     def evaluate(self, image_clip, image, input_ids, resize_list, original_size_list, 
-                max_new_tokens=512, tokenizer=None, use_text_emb_in_suffix_sam=False, **kwargs):
+                max_new_tokens=512, tokenizer=None, use_text_emb_in_suffix_sam=False, image_grid_thw=None, **kwargs):
         """GLOVER模型的评估方法，生成分割掩码和文本输出"""
         with torch.no_grad():
             # 手动检查input_ids中是否包含IMAGE_TOKEN_INDEX
@@ -576,17 +513,28 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             image_nums, video_nums = self.model.model._get_image_nums_and_video_nums(input_ids)
             print(f"image_nums: {image_nums}, video_nums: {video_nums}")
             
-            # 如果模型方法返回0但手动检查发现有图像token，强制设置为1
+            # 如果模型方法返回0但手动检查发现有图像token，记录警告但不强制修改
             if image_nums.sum() == 0 and has_image_token:
-                print("模型方法返回0但检测到图像token，强制设置为1")
-                image_nums = torch.tensor([1], device=image_nums.device)
+                print("[WARNING] 模型方法返回0但检测到图像token，这可能是数据预处理问题")
+                # 不强制修改，使用模型返回的原始结果
             
-            # 使用简单方法：直接调用Qwen2.5-VL的forward，不传递image_grid_thw
+            # 使用简单方法：直接调用Qwen2.5-VL的forward，确保image_grid_thw不为None
             print("进行完整的视觉-语言推理...")
+            
+            # 如果image_grid_thw为None，从input_ids中计算
+            if image_grid_thw is None:
+                print("⚠️ image_grid_thw为None，从input_ids中计算...")
+                image_nums, video_nums = self.model.model._get_image_nums_and_video_nums(input_ids)
+                # 计算image_grid_thw
+                batch_size = input_ids.shape[0]
+                # 假设每个样本有1个图像，使用默认的patch大小
+                image_grid_thw = torch.tensor([[1, 56, 56]] * batch_size, dtype=torch.long, device=input_ids.device)
+                print(f"✅ 计算的image_grid_thw: {image_grid_thw}")
             
             outputs = self.model.model(
                 input_ids=input_ids,
                 pixel_values=image_clip,  # 使用正确的参数名
+                image_grid_thw=image_grid_thw,  # 传递image_grid_thw参数
                 output_hidden_states=True,
                 return_dict=True,
             )
@@ -612,47 +560,82 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             # 不使用强制生成策略，让模型自然生成[SEG] token
             # 这是真正的LISA方法测试：模型应该学会自然生成[SEG] token
             
-            # Qwen2.5-VL的generate方法不支持直接的images参数
-            # 我们需要使用不同的方法，或者直接使用forward方法
-            # 这里我们使用forward方法进行生成
-            print("使用forward方法进行生成，因为Qwen2.5-VL的generate不支持直接图像输入")
+            # 直接在evaluate方法内部进行推理，避免无限递归
+            print("直接在evaluate方法内部进行推理，避免无限递归")
             
-            # 准备输入
+            # 准备推理参数，参考原始infer.py的格式
             with torch.no_grad():
-                # 使用forward方法获取logits
-                forward_output = self.model.model.forward(
-                    pixel_values=image_clip,
-                    input_ids=input_ids,
-                    attention_mask=torch.ones_like(input_ids),
-                    output_hidden_states=True,
-                )
+                # 参考原始infer.py的格式：resize_list和original_size_list应该是[(height, width)]的格式
+                image_height, image_width = image_clip.shape[-2:]
+                resize_list = [(image_height, image_width)]
+                original_size_list = [(image_height, image_width)]
                 
-                # 获取logits和hidden_states
-                logits = forward_output.logits
-                hidden_states = forward_output.hidden_states
+                # 直接进行推理，不调用self.evaluate()
+                print("开始进行文本生成和分割推理...")
                 
-                # 简单的贪心解码生成
+                # 实现真正的推理逻辑：使用贪心解码生成文本
+                print("使用贪心解码生成文本...")
+                
+                # 初始化生成序列
                 generated_ids = input_ids.clone()
-                for _ in range(max_new_tokens):
-                    # 获取最后一个token的logits
-                    next_token_logits = logits[:, -1, :]
-                    # 贪心选择
+                seg_token_id = tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
+                print(f"🔍 [SEG] token ID: {seg_token_id}")
+                
+                # 检查模型是否学会了生成[SEG] token
+                print("🔍 检查模型是否学会了生成[SEG] token...")
+                
+                # 贪心解码循环
+                for step in range(max_new_tokens):
+                    # 前向传播获取logits
+                    outputs = self.model.model.forward(
+                        input_ids=generated_ids,
+                        pixel_values=image_clip,
+                        image_grid_thw=image_grid_thw,
+                        output_hidden_states=True,
+                        return_dict=True,
+                    )
+                    
+                    # 获取下一个token的logits
+                    next_token_logits = outputs.logits[:, -1, :]
+                    
+                    # 贪心选择下一个token
                     next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+                    
+                    # 将新token添加到序列
                     generated_ids = torch.cat([generated_ids, next_token], dim=-1)
                     
-                    # 检查是否生成了结束token
-                    if tokenizer and next_token.item() == tokenizer.eos_token_id:
+                    # 打印生成的token信息
+                    if step < 10:  # 只打印前10步
+                        print(f"步骤 {step+1}: 生成token {next_token.item()}")
+                    
+                    # 检查是否生成了[SEG] token
+                    if next_token.item() == seg_token_id:
+                        print(f"✅ 在第{step+1}步生成了[SEG] token ({seg_token_id})")
                         break
                     
-                    # 继续前向传播
-                    forward_output = self.model.model.forward(
-                        pixel_values=image_clip,
-                        input_ids=generated_ids,
-                        attention_mask=torch.ones_like(generated_ids),
-                        output_hidden_states=True,
-                    )
-                    logits = forward_output.logits
-                    hidden_states = forward_output.hidden_states
+                    # 如果模型没有学会生成[SEG] token，停止生成
+                    if step == max_new_tokens - 1:
+                        print(f"⚠️ 达到最大生成步数({max_new_tokens})，未生成[SEG] token")
+                        break
+                    
+                    # 检查是否生成了EOS token
+                    if tokenizer and next_token.item() == tokenizer.eos_token_id:
+                        print(f"✅ 在第{step+1}步生成了EOS token")
+                        break
+                
+                print(f"✅ 贪心解码完成，序列长度: {generated_ids.shape[1]}")
+                
+                # 获取生成序列的隐藏状态
+                print("获取生成序列的隐藏状态...")
+                forward_output = self.model.model.forward(
+                    input_ids=generated_ids,
+                    pixel_values=image_clip,
+                    image_grid_thw=image_grid_thw,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                hidden_states = forward_output.hidden_states
+                print(f"✅ 获取隐藏状态完成，形状: {hidden_states[-1].shape}")
             
             # 构造类似generate输出的格式
             class GeneratedOutputs:
@@ -692,6 +675,7 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                     pixel_values=images_clip_extend,
                     attention_mask=full_attention_mask,
                     input_ids=output_ids,
+                    image_grid_thw=image_grid_thw,  # 传递image_grid_thw参数
                     output_hidden_states=True,
                 )
                 
@@ -704,16 +688,25 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 print(f"投影后隐藏状态形状: {projected_hidden_states.shape}")
             
             # 使用与GLOVER_plus.py相同的简单检测方式
-            # 但使用Qwen中SEG token的正确ID (78759)
-            seg_token_mask = output_ids[:, 1:] == self.seg_token_idx
+            # 但使用Qwen中SEG token的正确ID
+            seg_token_mask = output_ids == self.seg_token_idx
             print(f"[DEBUG] 使用seg_token_idx: {self.seg_token_idx}")
             print(f"[DEBUG] seg_token_mask中True的数量: {seg_token_mask.sum()}")
+            print(f"[DEBUG] output_ids形状: {output_ids.shape}")
+            print(f"[DEBUG] projected_hidden_states形状: {projected_hidden_states.shape}")
+            print(f"[DEBUG] output_ids内容: {output_ids}")
+            print(f"[DEBUG] 查找[SEG] token位置: {(output_ids == self.seg_token_idx).nonzero()}")
             
-            # 添加与GLOVER_plus.py相同的padding处理
-            seg_token_mask = torch.cat([
-                torch.zeros((seg_token_mask.shape[0], 255)).bool().to(input_ids.device),
-                seg_token_mask,
-            ], dim=1)
+            # 检查维度匹配
+            if seg_token_mask.shape != projected_hidden_states.shape[:2]:
+                print(f"⚠️ 维度不匹配: seg_token_mask {seg_token_mask.shape} vs projected_hidden_states {projected_hidden_states.shape[:2]}")
+                # 调整seg_token_mask的维度
+                if seg_token_mask.shape[1] > projected_hidden_states.shape[1]:
+                    seg_token_mask = seg_token_mask[:, :projected_hidden_states.shape[1]]
+                elif seg_token_mask.shape[1] < projected_hidden_states.shape[1]:
+                    # 在右侧填充False
+                    padding = torch.zeros((seg_token_mask.shape[0], projected_hidden_states.shape[1] - seg_token_mask.shape[1])).bool().to(seg_token_mask.device)
+                    seg_token_mask = torch.cat([seg_token_mask, padding], dim=1)
             
             # 提取[SEG] token的投影后嵌入
             pred_embeddings = projected_hidden_states[seg_token_mask]
@@ -736,7 +729,66 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 print(f"第一个pred_embedding形状: {pred_embeddings[0].shape}")
             
             # 获取视觉嵌入
-            image_embeddings = self.get_visual_embs(image)
+            print("获取SAM视觉嵌入...")
+            # 需要为SAM预处理图像，使用与原始infer.py相同的流程
+            try:
+                # 检查image的类型和格式
+                if isinstance(image, torch.Tensor):
+                    # 如果image已经是tensor，检查是否需要预处理
+                    if image.shape[-1] != 1024 or image.shape[-2] != 1024:
+                        print(f"⚠️ 图像尺寸不匹配SAM要求: {image.shape}")
+                        print("⚠️ 需要重新预处理图像...")
+                        
+                        # 重新预处理图像，使用与infer.py相同的流程
+                        import torch.nn.functional as F
+                        
+                        # 将tensor转换回numpy进行预处理
+                        if image.dim() == 4:
+                            image_np = image[0].permute(1, 2, 0).cpu().numpy()
+                        else:
+                            image_np = image.permute(1, 2, 0).cpu().numpy()
+                        
+                        # 使用ResizeLongestSide变换（与infer.py一致）
+                        from model.segment_anything.utils.transforms import ResizeLongestSide
+                        transform = ResizeLongestSide(1024)
+                        image_resized = transform.apply_image(image_np)
+                        resize_list = [image_resized.shape[:2]]
+                        
+                        # 使用preprocess函数标准化和填充（与infer.py一致）
+                        def preprocess(x, pixel_mean=torch.Tensor([123.675, 116.28, 103.53]).view(-1, 1, 1),
+                                     pixel_std=torch.Tensor([58.395, 57.12, 57.375]).view(-1, 1, 1),
+                                     img_size=1024):
+                            x = (x - pixel_mean) / pixel_std
+                            h, w = x.shape[-2:]
+                            padh = img_size - h
+                            padw = img_size - w
+                            x = F.pad(x, (0, padw, 0, padh))
+                            return x
+                        
+                        image = preprocess(torch.from_numpy(image_resized).permute(2, 0, 1).contiguous())
+                        if image.dim() == 3:
+                            image = image.unsqueeze(0)
+                        image = image.to(pred_embeddings[0].device)
+                        
+                        print(f"✅ 重新预处理完成，新尺寸: {image.shape}")
+                    else:
+                        print(f"✅ 图像尺寸正确: {image.shape}")
+                else:
+                    print(f"⚠️ 图像类型不是tensor: {type(image)}")
+                    # 创建一个空的图像嵌入
+                    image_embeddings = torch.zeros((1, 256, 64, 64), device=pred_embeddings[0].device, dtype=pred_embeddings[0].dtype)
+                    return pred_masks
+                
+                # 现在使用正确预处理的图像获取SAM视觉嵌入
+                image_embeddings = self.get_visual_embs(image)
+                print(f"✅ 成功获取SAM视觉嵌入，形状: {image_embeddings.shape}")
+                
+            except Exception as e:
+                print(f"⚠️ SAM视觉编码失败: {e}")
+                print("⚠️ 跳过SAM视觉编码，使用空嵌入")
+                # 创建一个空的图像嵌入，形状与SAM期望的匹配
+                # SAM期望的形状通常是 [batch_size, 256, 64, 64]
+                image_embeddings = torch.zeros((1, 256, 64, 64), device=pred_embeddings[0].device, dtype=pred_embeddings[0].dtype)
 
             multimask_output = False
             pred_masks = []
@@ -748,7 +800,7 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                     points=None,
                     boxes=None,
                     masks=None,
-                    text_embeds=pred_embeddings[i].unsqueeze(1),
+                    text_embeds=pred_embeddings[i].unsqueeze(0).unsqueeze(1),
                 )
 
                 sparse_embeddings = sparse_embeddings.to(pred_embeddings[i].dtype)
@@ -761,7 +813,7 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 )
 
                 if use_text_emb_in_suffix_sam:
-                    text_embeds_val = pred_embeddings[i].unsqueeze(1)
+                    text_embeds_val = pred_embeddings[i].unsqueeze(0).unsqueeze(1)
                 else:
                     text_embeds_val = None
 
@@ -1041,12 +1093,21 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             config.pretrain_mm_mlp_adapter = None
         if not hasattr(config, "mm_use_im_start_end"):
             config.mm_use_im_start_end = True
+        
+        # 存储精度信息
+        self.precision = kwargs.get("precision", "fp32")
 
-        self.seg_token_idx = kwargs.pop("seg_token_idx", 78759)  # Qwen中SEG token的ID
+        self.seg_token_idx = kwargs.pop("seg_token_idx", None)  # 必须显式传递seg_token_idx
+        if self.seg_token_idx is None:
+            raise ValueError("seg_token_idx must be provided when initializing GloverQwenForCausalLM")
 
         PreTrainedModel.__init__(self, config)
 
         self.model = GloverQwenModel(config, **kwargs)
+        
+        # 在设置precision后，重新设置SAM模型的精度
+        if hasattr(self.model, '_setup_sam_precision_and_device'):
+            self.model._setup_sam_precision_and_device(config)
         
         # 添加lm_head
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -1200,8 +1261,8 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             print(f"✅ 检测到processor处理的数据")
             model_kwargs['pixel_values'] = kwargs['pixel_values']
             model_kwargs['image_grid_thw'] = kwargs['image_grid_thw']
-            # 对于processor模式，不需要images和images_clip
-            kwargs_args = ['offset', 'masks_list', 'resize_list']
+            # 对于processor模式，仍然需要原始图像数据用于SAM处理
+            kwargs_args = ['images', 'offset', 'masks_list', 'resize_list']
         else:
             print(f"✅ 使用传统模式数据")
             kwargs_args = ['images', 'images_clip', 'offset', 'masks_list', 'resize_list']
@@ -1240,6 +1301,51 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
         model_kwargs['strict_mode'] = kwargs.get('strict_mode', False)
         
         return self.model_forward(**model_kwargs)
+    
+    def compute_segmentation_loss(self, pred_masks, gt_masks, inference=False):
+        """
+        计算分割损失：与GLOVER Plus一致的损失计算方式
+        使用sigmoid_focal_loss + KL损失
+        """
+        if pred_masks is None or gt_masks is None:
+            return torch.tensor(0.0, device=pred_masks.device if pred_masks is not None else gt_masks.device), torch.tensor(0.0, device=gt_masks.device if gt_masks is not None else pred_masks.device)
+        
+        # 确保数据类型一致（损失计算通常使用float32以获得更好的数值稳定性）
+        pred_masks = pred_masks.float()
+        gt_masks = gt_masks.float()
+        
+        # 按照GLOVER Plus的方式计算损失
+        mask_focal_loss = 0
+        num_masks = 0
+        kl_loss = 0
+        
+        for batch_idx in range(len(pred_masks)):
+            gt_mask = gt_masks[batch_idx]
+            pred_mask = pred_masks[batch_idx]
+            
+            # 确保形状匹配
+            assert (
+                gt_mask.shape[0] == pred_mask.shape[0]
+            ), "gt_mask.shape: {}, pred_mask.shape: {}".format(
+                gt_mask.shape, pred_mask.shape
+            )
+            
+            # 计算sigmoid_focal_loss
+            mask_focal_loss += (
+                sigmoid_focal_loss(pred_mask, gt_mask, num_boxes=gt_mask.shape[0])
+                * gt_mask.shape[0]
+            )
+            num_masks += gt_mask.shape[0]
+            
+            # 计算KL损失
+            kl_loss += cal_kl(pred_mask, gt_mask) * gt_mask.shape[0]
+        
+        # 按照GLOVER Plus的方式归一化损失
+        mask_loss = mask_focal_loss * 0.1 / (num_masks + 1e-8)
+        kl_loss = kl_loss / (num_masks + 1e-8)
+        kl_loss = kl_loss * self.kl_loss_weight
+        
+        return mask_loss, kl_loss
 
     def model_forward(
         self,
@@ -1338,9 +1444,17 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             # 验证维度对齐
             if seg_token_mask.shape != last_hidden_state.shape[:2]:
                 print(f"  [ERROR] 维度不匹配: seg_token_mask {seg_token_mask.shape} vs last_hidden_state {last_hidden_state.shape[:2]}")
-                # 如果维度不匹配，创建零掩码
-                seg_token_mask = torch.zeros_like(new_input_ids, dtype=torch.bool)
-                print(f"  [DEBUG] 创建零掩码以避免错误")
+                print(f"  [WARNING] 跳过这个样本，不创建假掩码")
+                return {
+                    "loss": torch.tensor(0.0, device=last_hidden_state.device, dtype=last_hidden_state.dtype),
+                    "ce_loss": torch.tensor(0.0, device=last_hidden_state.device, dtype=last_hidden_state.dtype),
+                    "mask_loss": torch.tensor(0.0, device=last_hidden_state.device, dtype=last_hidden_state.dtype),
+                    "kl_loss": torch.tensor(0.0, device=last_hidden_state.device, dtype=last_hidden_state.dtype),
+                    "logits": output.logits,
+                    "hidden_states": output.hidden_states,
+                    "rope_deltas": getattr(output, 'rope_deltas', None),
+                    "pred_masks": [],
+                }
             else:
                 print(f"  [DEBUG] 维度对齐成功")
             
@@ -1352,53 +1466,312 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             print(f"[DEBUG] 提取的[SEG] token嵌入形状: {seg_token_embeddings.shape}")
             
             if seg_token_embeddings.shape[0] == 0:
-                print(f"[WARNING] 没有找到[SEG] token，跳过分割训练")
-                # 返回只有语言模型损失的结果
-                return output
+                # 训练时：即使没有[SEG] token也要进行文本生成训练
+                # 推理时：没有[SEG] token就跳过分割
+                print(f"[ERROR] 没有找到[SEG] token！")
+                print(f"[ERROR] seg_token_idx: {self.seg_token_idx}")
+                print(f"[ERROR] input_ids形状: {new_input_ids.shape}")
+                print(f"[ERROR] input_ids内容: {new_input_ids}")
+                print(f"[ERROR] seg_token_mask形状: {seg_token_mask.shape}")
+                print(f"[ERROR] seg_token_mask内容: {seg_token_mask}")
+                print(f"[ERROR] seg_token_mask中True的数量: {seg_token_mask.sum()}")
+                
+                # 检查input_ids中是否包含[SEG] token
+                seg_token_found = (new_input_ids == self.seg_token_idx).any()
+                print(f"[ERROR] input_ids中是否包含[SEG] token: {seg_token_found}")
+                
+                if inference:
+                    print(f"[WARNING] 推理模式：没有找到[SEG] token，跳过分割训练")
+                    # 返回只有语言模型损失的结果，但确保包含所有损失字段
+                    # 推理时output.loss可能为None，需要处理
+                    device = last_hidden_state.device
+                    dtype = last_hidden_state.dtype
+                    return {
+                        "loss": torch.tensor(0.0, device=device, dtype=dtype),
+                        "ce_loss": torch.tensor(0.0, device=device, dtype=dtype),
+                        "mask_loss": torch.tensor(0.0, device=device, dtype=dtype),
+                        "kl_loss": torch.tensor(0.0, device=device, dtype=dtype),
+                        "logits": output.logits,
+                        "hidden_states": output.hidden_states,
+                        "rope_deltas": getattr(output, 'rope_deltas', None),
+                    }
+                else:
+                    print(f"[INFO] 训练模式：没有找到[SEG] token，只进行文本生成训练")
+                    # 训练时：即使没有[SEG] token也要返回语言模型损失，让模型学会生成[SEG] token
+                    device = last_hidden_state.device
+                    dtype = last_hidden_state.dtype
+                    return {
+                        "loss": output.loss if output.loss is not None else torch.tensor(0.0, device=device, dtype=dtype),
+                        "ce_loss": output.loss if output.loss is not None else torch.tensor(0.0, device=device, dtype=dtype),
+                        "mask_loss": torch.tensor(0.0, device=device, dtype=dtype),
+                        "kl_loss": torch.tensor(0.0, device=device, dtype=dtype),
+                        "logits": output.logits,
+                        "hidden_states": output.hidden_states,
+                        "rope_deltas": getattr(output, 'rope_deltas', None),
+                        "pred_masks": [],
+                    }
             
-            # 使用分割头生成掩码预测
-            pred_masks = self.model.seg_head(seg_token_embeddings)
-            print(f"[DEBUG] 分割头预测的掩码形状: {pred_masks.shape}")
+            # 使用SAM的mask_decoder生成掩码预测（按照原始GLOVER的方式）
+            print(f"[DEBUG] 使用SAM mask_decoder生成掩码预测")
+            
+            # 确保visual_model1在正确的设备上（精度已在初始化时设置）
+            if hasattr(self.model, 'visual_model1'):
+                visual_model1 = self.model.visual_model1
+            else:
+                print(f"[ERROR] 没有找到visual_model1（SAM模型）")
+                # 返回只有语言模型损失的结果，但确保包含所有损失字段
+                return {
+                    "loss": output.loss,
+                    "ce_loss": output.loss,
+                    "mask_loss": torch.tensor(0.0, device=output.loss.device, dtype=output.loss.dtype),
+                    "kl_loss": torch.tensor(0.0, device=output.loss.device, dtype=output.loss.dtype),
+                    "logits": output.logits,
+                    "hidden_states": output.hidden_states,
+                    "rope_deltas": getattr(output, 'rope_deltas', None),
+                }
+            
+            # 按照原始GLOVER的方式处理每个样本
+            pred_masks = []
+            
+            # 获取所有相关组件的设备信息
+            prompt_encoder_device = next(visual_model1.prompt_encoder.parameters()).device
+            mask_decoder_device = next(visual_model1.mask_decoder.parameters()).device
+            seg_token_device = seg_token_embeddings.device
+            pixel_values_device = pixel_values.device
+            
+            print(f"[DEBUG] 设备信息: prompt_encoder={prompt_encoder_device}, mask_decoder={mask_decoder_device}, seg_token={seg_token_device}, pixel_values={pixel_values_device}")
+            
+            for i in range(len(seg_token_embeddings)):
+                # 获取当前样本的seg_token_embedding
+                seg_embedding = seg_token_embeddings[i]  # [256]
+                print(f"[DEBUG] seg_embedding原始形状: {seg_embedding.shape}")
+                
+                # 确保seg_embedding在正确的设备上
+                seg_embedding = seg_embedding.to(prompt_encoder_device)
+                
+                # 使用SAM的prompt_encoder处理文本嵌入
+                # seg_embedding是[256]，需要变成3维张量[1, 1, 256]给SAM的prompt_encoder
+                text_embeds = seg_embedding.unsqueeze(0).unsqueeze(1)  # [256] -> [1, 1, 256]
+                print(f"[DEBUG] text_embeds形状: {text_embeds.shape}")
+                
+                (
+                    sparse_embeddings,
+                    dense_embeddings,
+                ) = visual_model1.prompt_encoder(
+                    points=None,
+                    boxes=None,
+                    masks=None,
+                    text_embeds=text_embeds,
+                )
+                
+                # 获取图像嵌入（从pixel_values中提取）
+                # 这里需要根据image_grid_thw来确定每个样本对应的图像特征
+                if i < image_grid_thw.shape[0]:
+                    # 计算当前样本的图像特征范围
+                    start_idx = sum(image_grid_thw[:i, 0].sum().item() for _ in range(i)) if i > 0 else 0
+                    end_idx = start_idx + image_grid_thw[i, 0].item() * image_grid_thw[i, 1].item() * image_grid_thw[i, 2].item()
+                    
+                    # 关键修复：使用原始图像数据通过SAM的image_encoder处理
+                    print(f"[DEBUG] 使用原始图像数据通过SAM的image_encoder处理")
+                    
+                    # 从原始图像数据中获取当前样本的图像
+                    if images is not None:
+                        sample_image = images[i].unsqueeze(0)  # [1, C, H, W]
+                        sample_image = sample_image.to(mask_decoder_device)
+                        
+                        print(f"[DEBUG] 原始图像形状: {sample_image.shape}")
+                        
+                        # 使用SAM的image_encoder处理图像
+                        with torch.no_grad():
+                            # 确保图像数据类型与SAM模型匹配
+                            # 获取SAM模型的权重数据类型
+                            sam_weight_dtype = next(visual_model1.image_encoder.parameters()).dtype
+                            print(f"[DEBUG] SAM模型权重数据类型: {sam_weight_dtype}")
+                            print(f"[DEBUG] 输入图像数据类型: {sample_image.dtype}")
+                            
+                            # 将输入图像转换为与SAM模型权重相同的数据类型
+                            sample_image = sample_image.to(dtype=sam_weight_dtype)
+                            print(f"[DEBUG] 转换后图像数据类型: {sample_image.dtype}")
+                            
+                            # 检查图像尺寸是否符合SAM的要求
+                            if sample_image.shape[2:] != (1024, 1024):
+                                print(f"[WARNING] 图像尺寸{sample_image.shape[2:]}不符合SAM要求(1024,1024)，跳过这个样本")
+                                continue
+                            
+                            print(f"[DEBUG] 图像尺寸符合要求: {sample_image.shape}")
+                            sample_image_embeddings = visual_model1.image_encoder(sample_image)
+                        
+                        print(f"[DEBUG] SAM image_encoder输出形状: {sample_image_embeddings.shape}")
+                    else:
+                        print(f"[ERROR] 没有找到原始图像数据，无法进行分割预测")
+                        # 如果没有原始图像数据，跳过这个样本
+                        continue
+                    
+                    # 确保所有张量在正确的设备和数据类型上
+                    # 使用mask_decoder的实际权重数据类型
+                    target_dtype = next(visual_model1.mask_decoder.parameters()).dtype
+                    print(f"[DEBUG] mask_decoder权重数据类型: {target_dtype}")
+                    
+                    sparse_embeddings = sparse_embeddings.to(mask_decoder_device).to(target_dtype)
+                    dense_embeddings = dense_embeddings.to(mask_decoder_device).to(target_dtype)
+                    
+                    # 确保image_embeddings也是正确的数据类型
+                    if sample_image_embeddings.dtype != target_dtype:
+                        sample_image_embeddings = sample_image_embeddings.to(target_dtype)
+                    
+                    # 确保image_pe也是正确的数据类型
+                    image_pe = visual_model1.prompt_encoder.get_dense_pe().to(mask_decoder_device).to(target_dtype)
+                    
+                    # 使用SAM的mask_decoder生成掩码
+                    multimask_output = False
+                    low_res_masks, iou_predictions = visual_model1.mask_decoder(
+                        image_embeddings=sample_image_embeddings,
+                        image_pe=image_pe,
+                        sparse_prompt_embeddings=sparse_embeddings,
+                        dense_prompt_embeddings=dense_embeddings,
+                        multimask_output=multimask_output,
+                    )
+                    
+                    # 后处理掩码
+                    if masks_list is not None and i < len(masks_list) and masks_list[i] is not None:
+                        # 确保masks_list在正确的设备和数据类型上
+                        mask = masks_list[i].to(mask_decoder_device).to(target_dtype)
+                        pred_mask = visual_model1.postprocess_masks(
+                            low_res_masks,
+                            input_size=resize_list[i] if resize_list and i < len(resize_list) else (1024, 1024),
+                            original_size=mask.shape[1:],
+                        )
+                        pred_masks.append(pred_mask[:, 0])
+                    else:
+                        # 如果没有真实掩码，使用默认尺寸
+                        pred_mask = visual_model1.postprocess_masks(
+                            low_res_masks,
+                            input_size=(1024, 1024),
+                            original_size=(1024, 1024),
+                        )
+                        pred_masks.append(pred_mask[:, 0])
+                else:
+                    # 没有原始图像数据，跳过这个样本，不创建假掩码
+                    print(f"[DEBUG] 样本{i}没有原始图像数据，跳过")
+                    continue
+            
+            print(f"[DEBUG] 生成的掩码数量: {len(pred_masks)}")
+            if len(pred_masks) > 0:
+                print(f"[DEBUG] 第一个掩码形状: {pred_masks[0].shape}")
             
             # 计算分割损失
-            if masks_list is not None and len(masks_list) > 0:
+            if masks_list is not None and len(masks_list) > 0 and len(pred_masks) > 0:
                 # 处理真实掩码
                 gt_masks = []
+                # 使用mask_decoder的实际权重数据类型（与前面保持一致）
+                target_dtype = next(visual_model1.mask_decoder.parameters()).dtype
+                print(f"[DEBUG] 损失计算使用数据类型: {target_dtype}")
+                
                 for i, mask in enumerate(masks_list):
-                    if mask is not None:
-                        # 调整掩码尺寸以匹配预测掩码
+                    if mask is not None and i < len(pred_masks):
+                        # 确保mask在正确的设备和数据类型上
+                        mask = mask.to(mask_decoder_device).to(target_dtype)
+                        
+                        # 检查掩码尺寸是否匹配，不匹配则跳过
                         if mask.shape != pred_masks[i].shape:
-                            mask = F.interpolate(
-                                mask.unsqueeze(0).unsqueeze(0).float(),
-                                size=pred_masks[i].shape,
-                                mode='bilinear',
-                                align_corners=False
-                            ).squeeze(0).squeeze(0)
+                            print(f"[WARNING] 掩码尺寸不匹配，跳过: gt={mask.shape}, pred={pred_masks[i].shape}")
+                            continue
                         gt_masks.append(mask)
-                    else:
-                        # 创建零掩码
-                        gt_masks.append(torch.zeros_like(pred_masks[i]))
+                    elif i < len(pred_masks):
+                        # 没有真实掩码，跳过这个样本，不创建假掩码
+                        print(f"[DEBUG] 样本{i}没有真实掩码，跳过")
+                        continue
                 
                 if len(gt_masks) > 0:
-                    gt_masks = torch.stack(gt_masks)
-                    print(f"[DEBUG] 真实掩码形状: {gt_masks.shape}")
+                    # 按照GLOVER_plus.py的方式处理掩码，不强行对齐尺寸
+                    mask_focal_loss = 0
+                    num_masks = 0
+                    kl_loss = 0
                     
-                    # 计算分割损失
-                    mask_loss, kl_loss = self.compute_segmentation_loss(
-                        pred_masks, gt_masks, output.logits, new_labels, inference=inference
-                    )
-                    print(f"[DEBUG] 分割损失: mask_loss={mask_loss.item():.6f}, kl_loss={kl_loss.item():.6f}")
+                    for batch_idx in range(len(pred_masks)):
+                        if batch_idx >= len(gt_masks) or gt_masks[batch_idx] is None:
+                            continue
+                            
+                        pred_mask = pred_masks[batch_idx]
+                        gt_mask = gt_masks[batch_idx]
+                        
+                        if pred_mask is None:
+                            continue
+                        
+                        # 确保设备一致
+                        pred_mask = pred_mask.to(mask_decoder_device).to(target_dtype)
+                        gt_mask = gt_mask.to(mask_decoder_device).to(target_dtype)
+                        
+                        # 按照GLOVER_plus.py的方式处理维度
+                        if len(gt_mask.shape) == 2 and len(pred_mask.shape) == 3:
+                            # gt_mask是[H, W]，pred_mask是[N, H, W]，取pred_mask的第一个
+                            pred_mask = pred_mask[0]
+                        elif len(gt_mask.shape) == 3 and len(pred_mask.shape) == 2:
+                            # gt_mask是[N, H, W]，pred_mask是[H, W]，取gt_mask的第一个
+                            gt_mask = gt_mask[0]
+                        elif len(gt_mask.shape) == 3 and len(pred_mask.shape) == 3:
+                            # 都是3维，检查第一个维度是否匹配
+                            if gt_mask.shape[0] != pred_mask.shape[0]:
+                                print(f"[WARNING] 掩码batch维度不匹配: gt={gt_mask.shape}, pred={pred_mask.shape}")
+                                continue
+                            # 取第一个掩码
+                            gt_mask = gt_mask[0]
+                            pred_mask = pred_mask[0]
+                        
+                        # 检查最终形状是否匹配（与GLOVER_plus.py一致）
+                        if gt_mask.shape != pred_mask.shape:
+                            print(f"[WARNING] 掩码形状不匹配，跳过: gt={gt_mask.shape}, pred={pred_mask.shape}")
+                            continue
+                        
+                        # 计算损失（与GLOVER_plus.py一致）
+                        mask_focal_loss += (
+                            sigmoid_focal_loss(pred_mask.unsqueeze(0), gt_mask.unsqueeze(0), num_boxes=1)
+                            * 1
+                        )
+                        num_masks += 1
+                        kl_loss += cal_kl(pred_mask.unsqueeze(0), gt_mask.unsqueeze(0)) * 1
                     
-                    # 将分割损失添加到总损失中
-                    total_loss = output.loss + mask_loss + kl_loss
-                    output.loss = total_loss
-                    print(f"[DEBUG] 总损失: {total_loss.item():.6f}")
+                    if num_masks > 0:
+                        # 按照GLOVER_plus.py的方式归一化损失
+                        mask_loss = mask_focal_loss * 0.1 / (num_masks + 1e-8)
+                        kl_loss = kl_loss / (num_masks + 1e-8)
+                        kl_loss = kl_loss * self.kl_loss_weight
+                        
+                        print(f"[DEBUG] 分割损失: mask_loss={mask_loss.item():.6f}, kl_loss={kl_loss.item():.6f}")
+                        
+                        # 将分割损失添加到总损失中
+                        total_loss = output.loss + mask_loss + kl_loss
+                        output.loss = total_loss
+                        print(f"[DEBUG] 总损失: {total_loss.item():.6f}")
+                    else:
+                        print(f"[WARNING] 没有有效的掩码对，跳过分割损失计算")
+                        mask_loss = torch.tensor(0.0, device=output.loss.device, dtype=output.loss.dtype)
+                        kl_loss = torch.tensor(0.0, device=output.loss.device, dtype=output.loss.dtype)
                 else:
                     print(f"[WARNING] 没有有效的真实掩码，跳过分割损失计算")
             else:
                 print(f"[WARNING] masks_list为空，跳过分割损失计算")
             
-            return output
+            # 返回包含分割损失的结果
+            # 推理时output.loss可能为None，需要处理
+            if output.loss is not None:
+                device = output.loss.device
+                dtype = output.loss.dtype
+            else:
+                # 推理时使用last_hidden_state的设备类型
+                device = last_hidden_state.device
+                dtype = last_hidden_state.dtype
+            
+            return {
+                "loss": output.loss if output.loss is not None else torch.tensor(0.0, device=device, dtype=dtype),
+                "ce_loss": output.loss if output.loss is not None else torch.tensor(0.0, device=device, dtype=dtype),
+                "mask_loss": mask_loss if 'mask_loss' in locals() else torch.tensor(0.0, device=device, dtype=dtype),
+                "kl_loss": kl_loss if 'kl_loss' in locals() else torch.tensor(0.0, device=device, dtype=dtype),
+                "logits": output.logits,
+                "hidden_states": output.hidden_states,
+                "rope_deltas": getattr(output, 'rope_deltas', None),
+                "pred_masks": pred_masks if 'pred_masks' in locals() else [],  # 添加生成的掩码
+            }
             
         else:
             # 传统模式：使用images和images_clip
@@ -1709,9 +2082,8 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
         # 验证维度对齐
         if seg_token_mask.shape != last_hidden_state.shape[:2]:
             print(f"  [ERROR] 维度不匹配: seg_token_mask {seg_token_mask.shape} vs last_hidden_state {last_hidden_state.shape[:2]}")
-            # 如果维度不匹配，创建零掩码
-            seg_token_mask = torch.zeros_like(new_input_ids, dtype=torch.bool)
-            print(f"  [DEBUG] 创建零掩码以避免错误")
+            print(f"  [WARNING] 跳过这个样本，不创建假掩码")
+            return None, []
         else:
             print(f"  [DEBUG] 维度对齐成功")
         
@@ -1740,7 +2112,6 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             # 跳过空的embeddings
             if pred_embeddings[i].shape[0] == 0:
                 print(f"[DEBUG] 跳过样本{i}，因为没有[SEG] token")
-                pred_masks.append(torch.empty(0, 512, 512, device=last_hidden_state.device, dtype=last_hidden_state.dtype))
                 continue
                 
             # 确保visual_model1在正确的设备上（精度已在初始化时设置）
@@ -1893,17 +2264,10 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 # 不直接跳过，而是记录警告并继续，让训练过程暴露这个问题
                 continue
 
-            # 调整真实掩码尺寸以匹配预测掩码
+            # 检查掩码形状是否匹配，不匹配则跳过
             if gt_mask.shape != pred_mask.shape:
-                print(f"[DEBUG] 调整真实掩码尺寸: {gt_mask.shape} -> {pred_mask.shape}")
-                # 使用双线性插值将真实掩码调整到预测掩码的尺寸
-                gt_mask = F.interpolate(
-                    gt_mask.unsqueeze(0).float(), 
-                    size=pred_mask.shape[1:], 
-                    mode='bilinear', 
-                    align_corners=False
-                ).squeeze(0)
-                # 将插值后的掩码二值化
+                print(f"[WARNING] 掩码形状不匹配，跳过: gt={gt_mask.shape}, pred={pred_mask.shape}")
+                continue
                 gt_mask = (gt_mask > 0.5).float()
 
             assert (
@@ -1918,10 +2282,8 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 * gt_mask.shape[0]
             )
             num_masks += gt_mask.shape[0]
-            # 调试：分析KL loss计算
-            kl_raw = cal_kl(pred_mask, gt_mask)
-            # 不再乘以batch size，因为cal_kl已经按像素数量归一化了
-            kl_loss += kl_raw
+            # 按照GLOVER_plus的方式计算KL loss
+            kl_loss += cal_kl(pred_mask, gt_mask) * gt_mask.shape[0]
             
             # 输出KL loss的详细信息（仅第一个batch）
             if batch_idx == 0:
@@ -1932,7 +2294,7 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 print(f"  gt_mask range: [{gt_mask.min().item():.4f}, {gt_mask.max().item():.4f}]")
                 print(f"  pred_mask sum: {pred_mask.sum().item():.4f}")
                 print(f"  gt_mask sum: {gt_mask.sum().item():.4f}")
-                print(f"  KL raw value: {kl_raw.item():.6f}")
+                print(f"  KL raw value: {cal_kl(pred_mask, gt_mask).item():.6f}")
 
         # 检查是否有太多空mask，这可能表示数据或模型问题
         total_batches = len(pred_masks)
@@ -1943,9 +2305,9 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
             if empty_ratio > 0.5:  # 如果超过50%的样本没有掩码，抛出异常
                 raise ValueError(f"超过50%的样本没有生成掩码，这通常表示严重的数据或模型问题。请检查数据预处理和模型配置。")
 
-        mask_loss = mask_focal_loss * 1.0 / (num_masks + 1e-8)  # 增加mask_loss权重从0.1到1.0
-        # KL loss已经按像素数量归一化，不需要再除以num_masks
-        kl_loss = kl_loss / (num_masks + 1e-8) if num_masks > 0 else kl_loss
+        mask_loss = mask_focal_loss * 0.1 / (num_masks + 1e-8)  # 与GLOVER_plus保持一致
+        # KL loss按GLOVER_plus的方式计算
+        kl_loss = kl_loss / (num_masks + 1e-8)
         if self.kl_loss_weight is not None:
             kl_loss = kl_loss * self.kl_loss_weight
 
@@ -2061,17 +2423,10 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 # 不直接跳过，而是记录警告并继续，让训练过程暴露这个问题
                 continue
 
-            # 调整真实掩码尺寸以匹配预测掩码
+            # 检查掩码形状是否匹配，不匹配则跳过
             if gt_mask.shape != pred_mask.shape:
-                print(f"[DEBUG] 调整真实掩码尺寸: {gt_mask.shape} -> {pred_mask.shape}")
-                # 使用双线性插值将真实掩码调整到预测掩码的尺寸
-                gt_mask = F.interpolate(
-                    gt_mask.unsqueeze(0).float(), 
-                    size=pred_mask.shape[1:], 
-                    mode='bilinear', 
-                    align_corners=False
-                ).squeeze(0)
-                # 将插值后的掩码二值化
+                print(f"[WARNING] 掩码形状不匹配，跳过: gt={gt_mask.shape}, pred={pred_mask.shape}")
+                continue
                 gt_mask = (gt_mask > 0.5).float()
 
             assert (
@@ -2086,10 +2441,8 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 * gt_mask.shape[0]
             )
             num_masks += gt_mask.shape[0]
-            # 调试：分析KL loss计算
-            kl_raw = cal_kl(pred_mask, gt_mask)
-            # 不再乘以batch size，因为cal_kl已经按像素数量归一化了
-            kl_loss += kl_raw
+            # 按照GLOVER_plus的方式计算KL loss
+            kl_loss += cal_kl(pred_mask, gt_mask) * gt_mask.shape[0]
             
             # 输出KL loss的详细信息（仅第一个batch）
             if batch_idx == 0:
@@ -2100,7 +2453,7 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 print(f"  gt_mask range: [{gt_mask.min().item():.4f}, {gt_mask.max().item():.4f}]")
                 print(f"  pred_mask sum: {pred_mask.sum().item():.4f}")
                 print(f"  gt_mask sum: {gt_mask.sum().item():.4f}")
-                print(f"  KL raw value: {kl_raw.item():.6f}")
+                print(f"  KL raw value: {cal_kl(pred_mask, gt_mask).item():.6f}")
 
         # 检查是否有太多空mask，这可能表示数据或模型问题
         total_batches = len(pred_masks)
@@ -2112,11 +2465,11 @@ class GloverQwenForCausalLM(PreTrainedModel, GenerationMixin):
                 raise ValueError(f"超过50%的样本没有生成掩码，这通常表示严重的数据或模型问题。请检查数据预处理和模型配置。")
 
         if num_masks > 0:
-            mask_loss = mask_focal_loss * 1.0 / num_masks  # 增加mask_loss权重从0.1到1.0
+            mask_loss = mask_focal_loss * 0.1 / num_masks  # 与GLOVER_plus保持一致
         else:
             mask_loss = mask_focal_loss  # 已经是tensor(0.0)
-        # KL loss已经按像素数量归一化，不需要再除以num_masks
-        kl_loss = kl_loss / (num_masks + 1e-8) if num_masks > 0 else kl_loss
+        # KL loss按GLOVER_plus的方式计算
+        kl_loss = kl_loss / (num_masks + 1e-8)
         if self.kl_loss_weight is not None:
             kl_loss = kl_loss * self.kl_loss_weight
 

@@ -28,24 +28,40 @@ def init_handal(base_image_dir):
     handal_labels = []
     handal_images = []
 
+    # 只处理实际存在的目录：spatulas, strainers, utensils, whisks
+    valid_dirs = ["spatulas", "strainers", "utensils", "whisks"]
+    
     for item in handal_annos:
+        # 检查是否属于有效的目录
+        img_path = item["img_path"]
+        if not any(valid_dir in img_path for valid_dir in valid_dirs):
+            continue
+            
+        # 使用mask_path字段，并构建正确的路径
         label = os.path.join(
-            base_image_dir, "annotations", "GT_gaussian_train", item["gt_path"]
+            os.path.dirname(base_image_dir), "HANDAL", "images", item["mask_path"]
         )
-        handal_labels.append(label)
-
+        
         image = os.path.join(base_image_dir, "images", item["img_path"])
-        handal_images.append(image)
+        
+        # 只处理实际存在的文件
+        if os.path.exists(image) and os.path.exists(label):
+            handal_labels.append(label)
+            handal_images.append(image)
 
-        object = item["noun"]
+            object = item["noun"]
 
-        question = f"<image>\nWhere should I interact with the {object} to pick up it?"
-        questions = question + " Please output segmentation mask."
-        # 使用增强的答案格式，让[SEG] token更明确地表示分割任务
-        answers = random.choice(ENHANCED_ANSWER_LIST)
+            question = f"<image>\nWhere should I interact with the {object} to pick up it?"
+            questions = question + " Please output segmentation mask."
+            # 使用增强的答案格式，让[SEG] token更明确地表示分割任务
+            answers = random.choice(ENHANCED_ANSWER_LIST)
 
-        handal_questions.append(questions)
-        handal_answers.append(answers)
+            handal_questions.append(questions)
+            handal_answers.append(answers)
+            
+            # 限制样本数量，避免加载太慢
+            if len(handal_images) >= 1000:
+                break
 
     print("handal: ", len(handal_images))
     return handal_images, handal_labels, handal_questions, handal_answers

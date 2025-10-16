@@ -338,6 +338,7 @@ def main():
         "vision_tower": args.vision_tower,
         "use_mm_start_end": args.use_mm_start_end,
         "image_size": args.sam_image_size,  # 传递SAM的image_size给模型
+        "precision": args.precision,  # 传递精度信息给模型
     }
     
     print(f"模型参数: {model_args}")
@@ -498,6 +499,10 @@ def main():
         ):
             # 修复：当ce_loss_weight > 0时，启用这些参数的梯度
             p.requires_grad = (args.ce_loss_weight > 0.0)
+            if args.ce_loss_weight > 0.0:
+                print(f"✅ 启用参数训练: {n}, requires_grad={p.requires_grad}")
+            else:
+                print(f"❌ 禁用参数训练: {n}, requires_grad={p.requires_grad}")
 
     for n, p in model.named_parameters():
         if "visual_model1." in n:
@@ -852,7 +857,8 @@ def train(
                     resize_list=input_dict['resize_list'],
                     tokenizer=input_dict['tokenizer'],
                     use_text_emb_in_suffix_sam=args.use_text_emb_in_suffix_sam,
-                    inference=input_dict.get('inference', False),
+                    inference=False,  # 训练时必须是False，确保进行分割训练
+                    images=input_dict.get('images', None),  # 传递原始图像数据
                 )
             else:
                 # 传统模式
@@ -872,6 +878,34 @@ def train(
 
             # 调试：检查模型输出的键
             print(f"[DEBUG] 模型输出键: {list(output_dict.keys())}")
+            
+            # 检查是否有[SEG] token相关的调试信息
+            if "pred_masks" in output_dict:
+                pred_masks = output_dict["pred_masks"]
+                if pred_masks and len(pred_masks) > 0:
+                    print(f"[DEBUG] 生成了 {len(pred_masks)} 个掩码")
+                else:
+                    print(f"[WARNING] 没有生成掩码，可能没有[SEG] token")
+            
+            # 检查labels中是否包含[SEG] token
+            if "labels" in input_dict:
+                labels = input_dict["labels"]
+                seg_token_id = tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
+                seg_token_count = (labels == seg_token_id).sum().item()
+                if seg_token_count > 0:
+                    print(f"[DEBUG] 批次中包含 {seg_token_count} 个[SEG] token (ID: {seg_token_id})")
+                else:
+                    print(f"[WARNING] 批次中没有[SEG] token，这可能导致模型无法学会生成[SEG] token")
+            
+            # 检查input_ids中是否包含[SEG] token
+            if "input_ids" in input_dict:
+                input_ids = input_dict["input_ids"]
+                seg_token_id = tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
+                seg_token_count = (input_ids == seg_token_id).sum().item()
+                if seg_token_count > 0:
+                    print(f"[DEBUG] 输入中包含 {seg_token_count} 个[SEG] token (ID: {seg_token_id})")
+                else:
+                    print(f"[DEBUG] 输入中没有[SEG] token（这是正常的，因为[SEG] token应该在labels中）")
             
             loss = output_dict["loss"]
             

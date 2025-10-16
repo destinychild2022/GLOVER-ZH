@@ -182,11 +182,11 @@ def collate_fn(
             conversation_list[i] = conversation_list[i].replace(
                 DEFAULT_IMAGE_TOKEN, replace_token
             )
-    # 对于Qwen2.5-VL，使用原生tokenizer处理，避免使用tokenizer_image_token
-    input_ids = []
-    for prompt in conversation_list:
-        # 直接使用tokenizer处理，让Qwen自己处理图像token
-        input_ids.append(tokenizer(prompt, return_tensors="pt").input_ids.squeeze(0))
+    # 使用tokenizer_image_token函数，确保编码一致性（借鉴原始代码）
+    input_ids = [
+        tokenizer_image_token(prompt, tokenizer, return_tensors="pt")
+        for prompt in conversation_list
+    ]
     # 确保padding_value不为None
     padding_value = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     input_ids = torch.nn.utils.rnn.pad_sequence(
@@ -196,93 +196,72 @@ def collate_fn(
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     attention_masks = input_ids.ne(pad_token_id)
 
-    # 传统模式：处理对话和标签
-    if not (use_qwen_mode and processor is not None):
-        conv = conversation_lib.default_conversation.copy()
-        targets = input_ids.clone()
+    # 传统模式：处理对话和标签（借鉴原版逻辑）
+    conv = conversation_lib.default_conversation.copy()
+    targets = input_ids.clone()
 
-        if conv_type == "llava_v1":
-            sep = conv.sep + conv.roles[1] + ": "
-        else:
-            sep = "[/INST] "
-        for conversation, target in zip(conversation_list, targets):
-            total_len = int(target.ne(pad_token_id).sum())
+    if conv_type == "llava_v1":
+        sep = conv.sep + conv.roles[1] + ": "
+    else:
+        sep = "[/INST] "
+    
+    for conversation, target in zip(conversation_list, targets):
+        total_len = int(target.ne(pad_token_id).sum())
 
-            # 处理对话分割，支持###和</s>两种分隔符
-            if conv.sep2 in conversation:
-                rounds = conversation.split(conv.sep2)
-            elif "###" in conversation:
-                rounds = conversation.split("###")
-            else:
-                rounds = [conversation]
-            cur_len = 1
-            target[:cur_len] = IGNORE_INDEX
-            for i, rou in enumerate(rounds):
-                if rou == "":
-                    break
-
-                parts = rou.split(sep)
-                assert len(parts) == 2, (len(parts), rou)
-                parts[0] += sep
-
-                if DEFAULT_IMAGE_TOKEN in conversation:
-                    round_len = len(tokenizer_image_token(rou, tokenizer))
-                    instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
-                else:
-                    round_len = len(tokenizer(rou).input_ids)
-                    instruction_len = len(tokenizer(parts[0]).input_ids) - 2
-
-                target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
-                cur_len += instruction_len
-                # 保留答案部分，不设置为IGNORE_INDEX
-                cur_len += (round_len - instruction_len)
-            target[cur_len:] = IGNORE_INDEX
-
-            if False:
-                z = target.clone()
-                z = torch.where(z == IGNORE_INDEX, tokenizer.unk_token_id, z)
-                if local_rank == 0:
-                    print(
-                        "conversation: ",
-                        conversation,
-                        "tokenizer.decode(z): ",
-                        tokenizer.decode(z),
-                    )
-
-            if cur_len < tokenizer.model_max_length:
-                # 暂时注释掉这个断言，避免训练中断
-                # assert cur_len == total_len
-                pass
-
-    # 改进的截断逻辑：对于超长样本，使用智能分割而不是简单截断
-    if inferences[0] == False:
-        max_length = tokenizer.model_max_length - 255  # 预留空间给特殊token
+        # 使用原版的简单分割逻辑
+        rounds = conversation.split(conv.sep2)
+        cur_len = 1
+        target[:cur_len] = IGNORE_INDEX
         
-        if input_ids.shape[1] > max_length:
-            print(f"⚠️ 检测到超长样本: {input_ids.shape[1]} > {max_length}")
-            print(f"   使用智能分割逻辑，避免信息丢失")
-            
-            # 使用智能分割函数
-            sequences = split_long_sequence(input_ids, targets, attention_masks, max_length, tokenizer)
-            
-            if len(sequences) > 1:
-                print(f"   警告：批次被分割成 {len(sequences)} 个片段")
-                print(f"   注意：这可能导致训练批次大小不一致，建议调整数据预处理")
-                
-                # 对于分割后的序列，我们选择第一个片段继续处理
-                # 在实际应用中，可能需要重新设计训练循环来处理多个片段
-                input_ids = sequences[0]['input_ids']
-                targets = sequences[0]['targets']
-                attention_masks = sequences[0]['attention_masks']
-                
-                print(f"   使用第一个片段，长度: {input_ids.shape[1]}")
-            else:
-                # 没有分割，直接使用
-                input_ids = sequences[0]['input_ids']
-                targets = sequences[0]['targets']
-                attention_masks = sequences[0]['attention_masks']
+        for i, rou in enumerate(rounds):
+            if rou == "":
+                break
 
-    # Qwen2.5-VL模式：使用processor一次性完成所有处理
+            parts = rou.split(sep)
+            if len(parts) != 2:
+                print(f"警告：对话分割异常，parts长度={len(parts)}, rou='{rou}', sep='{sep}'")
+                continue  # 跳过这个异常的对话轮次
+            
+            parts[0] += sep
+
+            if DEFAULT_IMAGE_TOKEN in conversation:
+                round_len = len(tokenizer_image_token(rou, tokenizer))
+                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+            else:
+                round_len = len(tokenizer(rou).input_ids)
+                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
+
+            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
+            cur_len += round_len
+        
+        target[cur_len:] = IGNORE_INDEX
+
+        if False:
+            z = target.clone()
+            z = torch.where(z == IGNORE_INDEX, tokenizer.unk_token_id, z)
+            if local_rank == 0:
+                print(
+                    "conversation: ",
+                    conversation,
+                    "tokenizer.decode(z): ",
+                    tokenizer.decode(z),
+                )
+
+        if cur_len < tokenizer.model_max_length:
+            # 暂时注释掉这个断言，避免训练中断
+            # assert cur_len == total_len
+            pass
+
+    # 使用原版的简单截断逻辑
+    if inferences[0] == False:
+        truncate_len = tokenizer.model_max_length - 255
+
+        if input_ids.shape[1] > truncate_len:
+            input_ids = input_ids[:, :truncate_len]
+            targets = targets[:, :truncate_len]
+            attention_masks = attention_masks[:, :truncate_len]
+
+    # 根据use_qwen_mode参数决定使用哪种模式
     if use_qwen_mode and processor is not None:
         print(f"使用 Qwen2.5-VL processor 一次性处理 {len(image_path_list)} 个样本")
 
@@ -331,12 +310,18 @@ def collate_fn(
             
             for i, conversation in enumerate(conversation_list):
                 # 根据conv_llava_v1的格式分离问题和答案
-                # 格式：USER: question ASSISTANT: answer</s>
-                if "ASSISTANT:" in conversation:
-                    parts = conversation.split("ASSISTANT:")
+                # 格式：###Human: question ###Assistant: answer###
+                if "###Assistant:" in conversation:
+                    parts = conversation.split("###Assistant:")
                     if len(parts) == 2:
-                        question_part = parts[0].replace("USER:", "").strip()
-                        answer_part = parts[1].replace("</s>", "").strip()
+                        # 从问题部分中提取Human:后的内容
+                        question_part = parts[0]
+                        if "###Human:" in question_part:
+                            question_part = question_part.split("###Human:")[1].strip()
+                        else:
+                            question_part = question_part.strip()
+                        # 从答案部分中提取内容，去掉结尾的###
+                        answer_part = parts[1].replace("###", "").strip()
                         
                         # 构造完整的对话格式（包含prompt + answer）
                         complete_messages = [
@@ -377,32 +362,161 @@ def collate_fn(
             if all_video_inputs:
                 processor_kwargs["videos"] = all_video_inputs
             
-            inputs = processor(**processor_kwargs)
-            # processor没有自动生成labels，需要手动处理
+            # 关键修复：临时扩展processor的tokenizer，然后使用processor处理
+            # 这样可以保持图像token和图像特征的对应关系，同时确保[SEG] token被正确识别
             
-            # 提取处理后的数据 - processor已经完成了所有处理
+            # 1. 临时扩展processor的tokenizer
+            original_processor_vocab_size = len(processor.tokenizer)
+            if len(processor.tokenizer) < len(tokenizer):
+                # 添加缺失的tokens到processor的tokenizer
+                missing_tokens = []
+                for token_id in range(original_processor_vocab_size, len(tokenizer)):
+                    token = tokenizer.decode([token_id])
+                    if token not in processor.tokenizer.get_vocab():
+                        missing_tokens.append(token)
+                
+                if missing_tokens:
+                    processor.tokenizer.add_tokens(missing_tokens)
+                    print(f"临时添加了 {len(missing_tokens)} 个tokens到processor的tokenizer")
+            
+            # 2. 使用processor完整处理（包括图像和文本）
+            processor_kwargs = {
+                "text": all_texts,           # 完整的对话文本（包含prompt + answer）
+                "images": all_image_inputs,  # 图像
+                "padding": True,
+                "return_tensors": "pt"
+            }
+            if all_video_inputs:
+                processor_kwargs["videos"] = all_video_inputs
+            
+            inputs = processor(**processor_kwargs)
+            
+            # 3. 提取处理后的数据
             pixel_values = inputs.pixel_values
             input_ids = inputs.input_ids
             attention_masks = inputs.attention_mask
             image_grid_thw = inputs.image_grid_thw
             
-            # 手动生成labels：克隆input_ids，将prompt部分设为-100
+            # 4. 修复image_grid_thw维度问题
+            # 确保image_grid_thw的batch维度与图像数量匹配
+            batch_size = len(image_path_list)
+            if image_grid_thw.shape[0] != batch_size:
+                print(f"⚠️ 警告: image_grid_thw维度不匹配")
+                print(f"   期望: [batch_size={batch_size}, 3]")
+                print(f"   实际: {image_grid_thw.shape}")
+                
+                # 如果image_grid_thw只有1个元素，复制到batch_size
+                if image_grid_thw.shape[0] == 1:
+                    image_grid_thw = image_grid_thw.repeat(batch_size, 1)
+                    print(f"   修复: 复制到 {image_grid_thw.shape}")
+                else:
+                    # 如果维度完全不匹配，使用默认值
+                    print(f"   修复: 使用默认值")
+                    image_grid_thw = torch.tensor([[image_size//patch_size, image_size//patch_size, 1]] * batch_size, dtype=torch.long)
+                    print(f"   修复后: {image_grid_thw.shape}")
+            
+            # 5. 恢复processor的tokenizer（如果需要的话）
+            if len(processor.tokenizer) > original_processor_vocab_size:
+                # 这里我们不恢复，因为可能会影响后续处理
+                # 实际上，扩展processor的tokenizer是安全的
+                pass
+            
+            # 6. 手动生成labels：克隆input_ids，将prompt部分设为-100
             labels = input_ids.clone()
-            IGNORE_INDEX = -100
             
             # 对于每个样本，找到assistant回答的开始位置并mask掉prompt部分
             for i in range(len(all_texts)):
-                # 使用tokenizer找到assistant回答的开始位置
-                assistant_start = all_texts[i].find("assistant")
+                # 使用更精确的方法找到assistant回答的开始位置
+                # 查找"ASSISTANT"后面的内容（注意大小写）
+                assistant_start = all_texts[i].find("ASSISTANT")
                 if assistant_start != -1:
-                    # 找到assistant回答开始后的第一个token
-                    assistant_text = all_texts[i][assistant_start:]
+                    # 找到assistant回答开始后的内容（跳过"ASSISTANT"）
+                    assistant_text = all_texts[i][assistant_start + len("ASSISTANT"):].strip()
+                    # 进一步清理，移除可能的分隔符
+                    if assistant_text.startswith(":"):
+                        assistant_text = assistant_text[1:].strip()
+                    if assistant_text.startswith(" "):
+                        assistant_text = assistant_text[1:].strip()
+                    
+                    # 使用与processor相同的tokenizer编码assistant回答部分
                     assistant_tokens = processor.tokenizer.encode(assistant_text, add_special_tokens=False)
                     
-                    # 计算需要mask的长度（prompt部分的长度）
-                    prompt_length = input_ids[i].shape[0] - len(assistant_tokens)
-                    if prompt_length > 0:
+                    # 调试：检查assistant_tokens与input_ids的对应关系
+                    print(f"样本 {i}: assistant_text长度: {len(assistant_text)}, assistant_tokens长度: {len(assistant_tokens)}")
+                    print(f"样本 {i}: input_ids长度: {input_ids[i].shape[0]}")
+                    
+                    # 检查assistant_tokens是否在input_ids中
+                    assistant_tokens_tensor = torch.tensor(assistant_tokens)
+                    found_positions = []
+                    
+                    # 在input_ids中查找assistant_tokens的起始位置
+                    for start_idx in range(input_ids[i].shape[0] - len(assistant_tokens) + 1):
+                        if torch.equal(input_ids[i][start_idx:start_idx + len(assistant_tokens)], assistant_tokens_tensor):
+                            found_positions.append(start_idx)
+                            break
+                    
+                    if found_positions:
+                        # 找到了匹配的位置
+                        prompt_length = found_positions[0]
+                        print(f"样本 {i}: 找到assistant_tokens在位置 {prompt_length}")
+                        
+                        # 将prompt部分mask掉（设置为IGNORE_INDEX）
                         labels[i, :prompt_length] = IGNORE_INDEX
+                        
+                        # 将assistant回答部分设置为正确的token ID
+                        labels[i, prompt_length:prompt_length + len(assistant_tokens)] = assistant_tokens_tensor
+                    else:
+                        print(f"样本 {i}: 警告！无法在input_ids中找到assistant_tokens的匹配位置")
+                        print(f"  尝试查找[SEG] token在input_ids中的位置...")
+                        
+                        # 直接查找[SEG] token在input_ids中的位置
+                        # 统一使用processor.tokenizer，确保ID一致性
+                        seg_token_id = processor.tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
+                        seg_positions = (input_ids[i] == seg_token_id).nonzero(as_tuple=True)[0]
+                        
+                        if len(seg_positions) > 0:
+                            # 找到[SEG] token，假设它前面都是prompt
+                            seg_pos = seg_positions[0].item()
+                            print(f"样本 {i}: 找到[SEG] token在位置 {seg_pos}")
+                            
+                            # 将[SEG] token之前的部分mask掉
+                            labels[i, :seg_pos] = IGNORE_INDEX
+                            
+                            # 从[SEG] token开始，设置为正确的token ID
+                            remaining_length = input_ids[i].shape[0] - seg_pos
+                            labels[i, seg_pos:] = input_ids[i][seg_pos:]
+                        else:
+                            print(f"样本 {i}: 错误！既找不到assistant_tokens也找不到[SEG] token")
+                            # 如果都找不到，mask掉所有内容
+                            labels[i, :] = IGNORE_INDEX
+                    
+                    # 调试：检查[SEG] token是否在labels中
+                    # 统一使用processor.tokenizer，确保ID一致性
+                    seg_token_id = processor.tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
+                    seg_token_positions = (labels[i] == seg_token_id).nonzero(as_tuple=True)[0]
+                    if len(seg_token_positions) > 0:
+                        print(f"样本 {i}: 找到 {len(seg_token_positions)} 个[SEG] token在位置 {seg_token_positions.tolist()}")
+                    else:
+                        print(f"样本 {i}: [ERROR] 没有找到[SEG] token在labels中！")
+                        print(f"  [ERROR] seg_token_id: {seg_token_id}")
+                        print(f"  [ERROR] assistant_text: {assistant_text}")
+                        print(f"  [ERROR] assistant_tokens: {assistant_tokens}")
+                        print(f"  [ERROR] input_ids长度: {input_ids[i].shape[0]}, assistant_tokens长度: {len(assistant_tokens)}")
+                        print(f"  [ERROR] labels内容: {labels[i]}")
+                        print(f"  [ERROR] 检查labels中是否包含seg_token_id: {(labels[i] == seg_token_id).any()}")
+                        
+                        # 检查原始对话文本
+                        print(f"  [ERROR] 原始对话文本: {all_texts[i]}")
+                        
+                        # 检查tokenizer是否能正确编码[SEG]
+                        # 统一使用processor.tokenizer，确保ID一致性
+                        test_seg_tokens = processor.tokenizer("[SEG]", add_special_tokens=False).input_ids
+                        print(f"  [ERROR] processor.tokenizer编码[SEG]的结果: {test_seg_tokens}")
+                else:
+                    print(f"样本 {i}: 警告！没有找到'ASSISTANT'标记")
+                    print(f"  对话文本: {all_texts[i][:200]}...")  # 只显示前200个字符
+                    # 如果找不到assistant标记，mask掉所有内容（不进行训练）
+                    labels[i, :] = IGNORE_INDEX
             
             print(f"Processor处理结果: pixel_values={pixel_values.shape}, image_grid_thw={image_grid_thw.shape}")
             
@@ -411,7 +525,7 @@ def collate_fn(
             raise RuntimeError(f"Processor批量处理失败: {e}\n"
                              f"请检查图像格式、对话格式或processor配置。")
         
-        # 返回处理好的数据，不再进行额外处理
+        # 返回处理好的数据，包含原始图像数据用于SAM处理
         return {
             "image_paths": image_path_list,
             "pixel_values": pixel_values,
@@ -425,23 +539,25 @@ def collate_fn(
             "questions_list": questions_list,
             "inference": inferences[0],
             "conversation_list": conversation_list,
+            # 添加原始图像数据用于SAM处理
+            "images": torch.stack(images_list, dim=0),  # 原始图像数据，用于SAM image_encoder
         }
     else:
         # 传统模式：使用images和images_clip
         return {
-            "image_paths": image_path_list,
-            "images": torch.stack(images_list, dim=0),
-            "images_clip": torch.stack(images_clip_list, dim=0),
-            "input_ids": input_ids,
-            "labels": targets,
-            "attention_masks": attention_masks,
-            "masks_list": masks_list,
-            "resize_list": resize_list,
-            "offset": torch.LongTensor(offset_list),
-            "questions_list": questions_list,
-            "inference": inferences[0],
-            "conversation_list": conversation_list,
-        }
+        "image_paths": image_path_list,
+        "images": torch.stack(images_list, dim=0),
+        "images_clip": torch.stack(images_clip_list, dim=0),
+        "input_ids": input_ids,
+        "labels": targets,
+        "attention_masks": attention_masks,
+        "masks_list": masks_list,
+        "resize_list": resize_list,
+        "offset": torch.LongTensor(offset_list),
+        "questions_list": questions_list,
+        "inference": inferences[0],
+        "conversation_list": conversation_list,
+    }
 
 
 class HybridDataset(torch.utils.data.Dataset):

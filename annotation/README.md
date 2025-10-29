@@ -5,32 +5,23 @@
 ## 功能特性
 
 - **SAM分割**: 使用SAM模型进行精确的物体分割
-- **交互式标注**: 支持手动点击添加affordance点
+- **Web界面**: 提供友好的浏览器界面进行标注
+- **交互式标注**: 支持手动点击添加affordance点和分割点
+- **自动记忆**: 自动记录常用类别，提供智能建议
 - **批量处理**: 支持批量处理多张图像
-- **Jupyter支持**: 提供Jupyter notebook交互式标注工具
-- **输出格式**: 生成与3doi.json相同格式的标注数据
+- **输出格式**: 生成GLOVER++训练所需的标注数据
 - **掩码可视化**: 生成的掩码包含affordance点标记
 
 ## 文件说明
 
 ### 核心脚本
-- `simple_annotation.py`: 批量标注工具（命令行）
-- `interactive_annotation.py`: Jupyter notebook交互式标注工具
-- `visual_annotation.py`: 可视化交互式标注工具（推荐）
-
-### 启动脚本
-- `run_simple_annotation.sh`: 批量标注工具启动脚本
-- `run_visual_annotation.sh`: 可视化标注工具启动脚本
-
-### 配置文件
-- `points_template.json`: 点击点坐标模板文件
-- `README.md`: 说明文档
+- `web_annotation.py`: Web可视化标注工具
+- `run_web_annotation.sh`: 启动脚本
 
 ### 输出目录
 - `output/`: 所有生成文件的输出目录
   - `output/annotations.json`: 标注数据文件
   - `output/masks/`: 分割掩码图像目录
-  - `output/points_template.json`: 生成的点击点模板
 
 ## 模型路径
 
@@ -39,55 +30,22 @@
 
 ## 使用方法
 
-### 1. 可视化交互标注（推荐）
-
 ```bash
-# 激活虚拟环境
-source /mnt/data-cpfs/rap_mani/harrison.zhou/harrison_workspace/GLOVER/.venv/bin/activate
+# 激活conda环境
+conda activate glover-annotation
 
-# 启动可视化标注工具
-./run_visual_annotation.sh
+# 启动Web标注工具
+bash run_web_annotation.sh
+
+# 或手动启动：
+# python web_annotation.py \
+#   --sam_checkpoint /mnt/data-oss/rap-prod-bak/GLOVER/model/SAM-vit-h/sam_vit_h_4b8939.pth \
+#   --image_dir /path/to/your/images \
+#   --host 0.0.0.0 \
+#   --port 5000
 ```
 
-然后在Jupyter notebook中运行：
-```python
-from visual_annotation import create_visual_annotator
-
-# 创建标注器
-gui = create_visual_annotator("/mnt/data-oss/rap-prod-bak/GLOVER/model/SAM-vit-h/sam_vit_h_4b8939.pth")
-
-# 显示控件
-gui.display_controls()
-```
-
-### 2. 批量标注
-
-```bash
-# 激活虚拟环境
-source /mnt/data-cpfs/rap_mani/harrison.zhou/harrison_workspace/GLOVER/.venv/bin/activate
-
-# 创建点击点模板
-./run_simple_annotation.sh template
-
-# 编辑模板文件（可选）
-# 修改 output/points_template.json 中的点击坐标
-
-# 运行批量标注
-./run_simple_annotation.sh batch output/my_annotations.json
-```
-
-### 3. 交互式标注（Jupyter Notebook）
-
-```python
-# 在Jupyter notebook中运行
-from interactive_annotation import create_interactive_annotator
-
-# 创建标注器
-gui = create_interactive_annotator("/mnt/data-oss/rap-prod-bak/GLOVER/model/SAM-vit-h/sam_vit_h_4b8939.pth")
-
-# 显示控件
-gui.display_controls()
-```
+然后在浏览器中访问 `http://localhost:5000`
 
 ## 输出格式
 
@@ -136,16 +94,15 @@ cut, slice, chop, mix, stir, cook, heat, cool
 ## 环境要求
 
 ```bash
-# 激活虚拟环境
-source /mnt/data-cpfs/rap_mani/harrison.zhou/harrison_workspace/GLOVER/.venv/bin/activate
+# 创建conda环境
+cd annotation
+conda env create -f environment.yml
 
-# 依赖包已安装：
-# - torch, torchvision
-# - opencv-python
-# - segment-anything
-# - matplotlib
-# - ipywidgets (用于Jupyter交互)
-# - tqdm
+# 激活环境
+conda activate glover-annotation
+
+# 验证安装
+python -c "import torch; import cv2; import segment_anything; print('环境安装成功!')"
 ```
 
 ## 注意事项

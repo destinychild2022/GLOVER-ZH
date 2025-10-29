@@ -1,0 +1,29 @@
+# GLOVER++ 标注工具依赖包
+# 推荐使用 environment.yml 通过conda安装以获得更好的兼容性
+
+# 核心依赖
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.21.0
+opencv-python>=4.7.0
+
+# SAM模型
+segment-anything>=1.0
+
+# Web界面
+flask>=2.3.0
+werkzeug>=2.3.0
+
+# Jupyter交互式标注
+matplotlib>=3.5.0
+ipywidgets>=8.0.0
+ipython>=8.0.0
+jupyter>=1.0.0
+
+# 数据处理
+h5py>=3.7.0
+tqdm>=4.65.0
+
+# 其他工具
+pillow>=9.0.0
+

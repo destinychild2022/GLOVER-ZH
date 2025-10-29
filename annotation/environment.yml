@@ -1,0 +1,23 @@
+name: glover-annotation
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch>=2.0.0
+  - torchvision
+  - cudatoolkit=11.8
+  - numpy
+  - matplotlib
+  - opencv
+  - h5py
+  - tqdm
+  - flask
+  - ipywidgets
+  - ipython
+  - jupyter
+  - pip
+  - pip:
+    - segment-anything
+    - werkzeug

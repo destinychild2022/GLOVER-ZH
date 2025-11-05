@@ -18,7 +18,7 @@ SAM_CHECKPOINT="/mnt/data-oss/rap-prod-bak/GLOVER/model/SAM-vit-h/sam_vit_h_4b89
 # LISA_MODEL_PATH="/mnt/data-oss/rap-prod-bak/GLOVER/model/LISA_Plus_7b"
 
 # 设置图像目录
-IMAGE_DIR="/mnt/data-cpfs/rap_mani/harrison.zhou/harrison_workspace/GLOVER/annotation/non_grasp_frames_json/images/task_4"
+IMAGE_DIR="/mnt/data-cpfs/rap_mani/harrison.zhou/harrison_workspace/GLOVER/annotation/captures_batch/robot_arm_02"
 
 # 设置GPU编号（可以通过环境变量或参数设置）
 GPU_ID=${GPU_ID:-2}  # 默认使用GPU 2

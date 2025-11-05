@@ -12,6 +12,8 @@ import numpy as np
 import torch
 import argparse
 import base64
+import glob
+import re
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from flask import Flask, render_template, request, jsonify, send_from_directory
@@ -227,7 +229,7 @@ class WebAnnotator:
         return object_suggestions, action_suggestions
     
     def get_image_list(self):
-        """获取图像目录下的所有图像文件"""
+        """获取图像目录下的所有图像文件，按数字大小排序"""
         if not self.image_dir or not os.path.exists(self.image_dir):
             return []
         
@@ -238,7 +240,15 @@ class WebAnnotator:
             if Path(file).suffix.lower() in image_extensions:
                 image_files.append(file)
         
-        return sorted(image_files)
+        # 自然排序：按照文件名中的数字大小排序
+        def natural_sort_key(filename):
+            """提取文件名中的数字用于排序"""
+            # 提取文件名中的所有数字
+            parts = re.split(r'(\d+)', filename)
+            # 将数字部分转换为整数，非数字部分保持原样
+            return [int(part) if part.isdigit() else part.lower() for part in parts]
+        
+        return sorted(image_files, key=natural_sort_key)
     
     def predict_categories(self, image_path: str, mask: np.ndarray) -> Tuple[str, str]:
         """
@@ -348,9 +358,11 @@ class WebAnnotator:
         height, width = image.shape[:2]
         print(f"图像尺寸: {width}x{height}")
         
-        # 生成掩码文件名
+        # 生成掩码文件名：原名_物体类别_mask.png
         base_name = Path(image_path).stem
-        mask_filename = f"{base_name}_mask.png"
+        # 清理物体类别名称，移除特殊字符，避免文件名问题
+        safe_object_category = object_category.replace('/', '_').replace('\\', '_').replace(' ', '_')
+        mask_filename = f"{base_name}_{safe_object_category}_mask.png"
         
         # 保存掩码到output目录
         mask_path = os.path.join(self.output_dir, "masks", mask_filename)
@@ -493,14 +505,17 @@ class WebAnnotator:
         # 获取已标注的图像列表
         annotated_images = [ann['img_name'] for ann in self.annotations]
         
-        # 检查已存在的mask文件，标记已标注的图片
+        # 检查已存在的mask文件，标记已标注的图片（支持新格式：原名_物体类别_mask.png）
         mask_dir = os.path.join(self.output_dir, "masks")
         if os.path.exists(mask_dir):
             for image_name in self.image_list:
                 base_name = Path(image_name).stem
-                mask_filename = f"{base_name}_mask.png"
-                mask_path = os.path.join(mask_dir, mask_filename)
-                if os.path.exists(mask_path) and image_name not in annotated_images:
+                # 查找所有可能的mask文件（支持新格式和旧格式）
+                # 查找所有以base_name开头的mask文件
+                mask_pattern = os.path.join(mask_dir, f"{base_name}_*_mask.png")
+                old_mask_pattern = os.path.join(mask_dir, f"{base_name}_mask.png")
+                matching_masks = glob.glob(mask_pattern) + glob.glob(old_mask_pattern)
+                if matching_masks and image_name not in annotated_images:
                     # 如果存在mask文件但不在标注列表中，也标记为已标注
                     annotated_images.append(image_name)
         
@@ -587,12 +602,10 @@ def load_image(filename):
         if current_index != annotator.current_image_index:
             annotator.update_current_image_index(current_index)
         
-        # 查找已保存的标注信息
-        saved_annotation = None
-        for annotation in annotator.annotations:
-            if annotation['img_name'] == filename:
-                saved_annotation = annotation
-                break
+        # 查找已保存的标注信息（同一张图片可能有多个不同物体类别的标注）
+        # 返回该图片的所有标注，前端显示最后一个（最新的）
+        saved_annotations = [ann for ann in annotator.annotations if ann['img_name'] == filename]
+        saved_annotation = saved_annotations[-1] if saved_annotations else None
         
         # 如果没有找到标注信息，检查是否有mask文件
         if not saved_annotation:
@@ -643,7 +656,9 @@ def load_image(filename):
             'height': image.shape[0],
             'current_index': annotator.current_image_index,
             'total_count': len(annotator.image_list),
-            'saved_annotation': saved_annotation  # 添加已保存的标注信息
+            'saved_annotation': saved_annotation,  # 显示最后一个标注（最新的）
+            'all_annotations': saved_annotations,  # 该图片的所有标注（用于显示标注数量）
+            'annotation_count': len(saved_annotations)  # 该图片的标注数量
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -863,22 +878,24 @@ def save_annotation():
         
         # 添加到标注列表
         try:
-            # 检查是否已存在该图片的标注，如果存在则覆盖
+            # 检查是否已存在该图片和相同物体类别的标注，如果存在则覆盖
+            # 同一张图片可以标注多个不同物体，每个物体类别作为独立条目存储
             image_filename = os.path.basename(image_path)
             existing_annotation_index = None
             for i, existing_ann in enumerate(annotator.annotations):
-                if existing_ann['img_name'] == image_filename:
+                # 只有当图片名和物体类别都相同时，才认为是同一个标注，需要覆盖
+                if existing_ann['img_name'] == image_filename and existing_ann.get('object') == object_category:
                     existing_annotation_index = i
                     break
             
             if existing_annotation_index is not None:
-                # 覆盖已存在的标注
+                # 覆盖已存在的标注（同一图片、同一物体类别）
                 annotator.annotations[existing_annotation_index] = annotation
-                print(f"保存标注 - 覆盖已存在的标注: {image_filename}")
+                print(f"保存标注 - 覆盖已存在的标注: {image_filename} (物体: {object_category})")
             else:
-                # 添加新的标注
+                # 添加新的标注（新图片或新物体类别）
                 annotator.annotations.append(annotation)
-                print(f"保存标注 - 添加新标注: {image_filename}")
+                print(f"保存标注 - 添加新标注: {image_filename} (物体: {object_category})")
             
             # 更新记忆数据
             annotator.update_memory(object_category, action_category)
@@ -904,42 +921,17 @@ def save_annotation():
             print(f"保存标注 - 添加到列表失败: {e}")
             return jsonify({'error': f'Failed to add annotation to list: {e}'}), 500
         
-        # 获取下一张图像
-        try:
-            next_index = annotator.get_next_image_index()
-            next_image = annotator.image_list[next_index] if annotator.image_list else None
-            
-            # 更新当前索引
-            annotator.update_current_image_index(next_index)
-            
-            print(f"保存标注成功: {os.path.basename(image_path)}")
-            print(f"当前索引: {annotator.current_image_index}")
-            print(f"下一张图片: {next_image}")
-            print(f"总图片数: {len(annotator.image_list)}")
-        except Exception as e:
-            print(f"保存标注 - 获取下一张图片失败: {e}")
-            next_image = None
-            next_index = 0
-        
-        # 异步预加载下一张图片的base64数据
-        next_image_data = None
-        if next_image:
-            try:
-                cached_image = annotator.get_cached_image(next_image)
-                if cached_image is not None:
-                    image_rgb = cv2.cvtColor(cached_image, cv2.COLOR_BGR2RGB)
-                    _, buffer = cv2.imencode('.jpg', image_rgb, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    next_image_data = f'data:image/jpeg;base64,{base64.b64encode(buffer).decode("utf-8")}'
-            except Exception as e:
-                print(f"预加载下一张图片数据失败: {e}")
+        # 不再自动跳转到下一张图片，保持当前图片继续标注
+        print(f"保存标注成功: {os.path.basename(image_path)}")
+        print(f"当前索引: {annotator.current_image_index}")
+        print(f"总图片数: {len(annotator.image_list)}")
+        print(f"继续在当前图片上标注，可以添加更多标注")
         
         return jsonify({
             'success': True,
-            'message': f'标注已保存并自动更新到JSON文件！总计: {len(annotator.annotations)}',
-            'next_image': next_image,
-            'next_index': next_index,
+            'message': f'标注已保存并自动更新到JSON文件！总计: {len(annotator.annotations)}。可以继续在当前图片上添加更多标注。',
+            'current_index': annotator.current_image_index,
             'total_count': len(annotator.image_list),
-            'next_image_data': next_image_data,  # 预加载的图像数据
             'refresh_suggestions': True  # 告诉前端需要刷新建议
         })
         
@@ -993,17 +985,39 @@ def delete_annotation():
         # 获取图像文件名
         image_filename = os.path.basename(image_path)
         
-        # 从标注列表中删除
-        annotator.annotations = [ann for ann in annotator.annotations if ann['img_name'] != image_filename]
+        # 从标注列表中删除，并获取要删除的mask文件路径
+        mask_files_to_delete = []
+        remaining_annotations = []
+        for ann in annotator.annotations:
+            if ann['img_name'] == image_filename:
+                # 如果标注中有gt_path，记录要删除的mask文件
+                if 'gt_path' in ann and ann['gt_path']:
+                    mask_full_path = os.path.join("output", ann['gt_path'])
+                    if os.path.exists(mask_full_path):
+                        mask_files_to_delete.append(mask_full_path)
+            else:
+                remaining_annotations.append(ann)
+        annotator.annotations = remaining_annotations
         
-        # 删除mask文件
+        # 删除所有相关的mask文件（支持新格式和旧格式）
         base_name = Path(image_filename).stem
-        mask_filename = f"{base_name}_mask.png"
-        mask_path = os.path.join(annotator.output_dir, "masks", mask_filename)
+        mask_dir = os.path.join(annotator.output_dir, "masks")
+        # 查找所有以base_name开头的mask文件
+        mask_pattern = os.path.join(mask_dir, f"{base_name}_*_mask.png")
+        old_mask_pattern = os.path.join(mask_dir, f"{base_name}_mask.png")
+        all_matching_masks = glob.glob(mask_pattern) + glob.glob(old_mask_pattern)
         
-        if os.path.exists(mask_path):
-            os.remove(mask_path)
-            print(f"删除mask文件: {mask_path}")
+        # 删除所有找到的mask文件
+        for mask_path in all_matching_masks:
+            if os.path.exists(mask_path):
+                os.remove(mask_path)
+                print(f"删除mask文件: {mask_path}")
+        
+        # 也删除从annotation中获取的mask文件路径
+        for mask_path in mask_files_to_delete:
+            if os.path.exists(mask_path) and mask_path not in all_matching_masks:
+                os.remove(mask_path)
+                print(f"删除mask文件: {mask_path}")
         
         # 删除原图文件
         original_image_path = os.path.join(annotator.image_dir, image_filename)
@@ -1160,6 +1174,32 @@ def create_html_template():
         .predicted-category { background: #e7f3ff; padding: 5px; margin: 5px 0; border-radius: 3px; }
         .suggestions { background: #fff3cd; padding: 5px; margin: 5px 0; border-radius: 3px; border-left: 3px solid #ffc107; }
         .suggestions small { color: #856404; }
+        /* Toast通知样式 */
+        .toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #28a745;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 10000;
+            font-size: 16px;
+            font-weight: 500;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out;
+            pointer-events: none;
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+        .toast.hide {
+            opacity: 0;
+            transform: translateX(-50%) translateY(-20px);
+        }
     </style>
 </head>
 <body>
@@ -1254,6 +1294,9 @@ def create_html_template():
         </div>
     </div>
 
+    <!-- Toast通知容器 -->
+    <div id="toast" class="toast"></div>
+
     <script>
         let currentImage = null;
         let currentImagePath = null;
@@ -1270,6 +1313,24 @@ def create_html_template():
         let imageOffsetX = 0;
         let imageOffsetY = 0;
         let outputInfo = null;  // 存储输出目录信息
+        
+        // Toast通知函数
+        function showToast(message, duration = 2000) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.remove('hide');
+            toast.classList.add('show');
+            
+            // 延迟后自动隐藏
+            setTimeout(() => {
+                toast.classList.remove('show');
+                toast.classList.add('hide');
+                // 动画结束后移除类
+                setTimeout(() => {
+                    toast.classList.remove('hide');
+                }, 300);
+            }, duration);
+        }
         
         // 获取输出目录信息
         function getOutputInfo() {
@@ -1305,16 +1366,20 @@ def create_html_template():
         
         // 从gt_path获取mask文件路径
         function getMaskPathFromGtPath(gtPath) {
-            // 检查是否是任务目录格式：task_X/masks/...
+            // 检查是否是任务目录格式：task_X/masks/... 或其他目录/masks/...
             const taskMatch = gtPath.match(/^(task_\d+)\/masks\//);
             if (taskMatch) {
                 // 新的路径格式：task_X/masks/...
+                return `/output/${gtPath}`;
+            } else if (gtPath.includes('/masks/')) {
+                // 格式：目录名/masks/文件名 (如 robot_arm_02/masks/1_object_mask.png)
+                // 直接拼接output前缀
                 return `/output/${gtPath}`;
             } else if (gtPath.startsWith('output/')) {
                 // 完整路径格式：output/task_X/masks/...
                 return `/${gtPath}`;
             } else {
-                // 旧路径格式：masks/...
+                // 旧路径格式：masks/... 或直接文件名
                 return `/output/masks/${gtPath}`;
             }
         }
@@ -1327,6 +1392,13 @@ def create_html_template():
                 const annotations = data.annotations || [];
                 const annotatedImages = new Set(annotations.map(a => a.img_name));
                 
+                // 计算每张图片的标注数量
+                const annotationCounts = {};
+                annotations.forEach(ann => {
+                    const imgName = ann.img_name;
+                    annotationCounts[imgName] = (annotationCounts[imgName] || 0) + 1;
+                });
+                
                 // 更新所有图像的状态
                 document.querySelectorAll('.image-item').forEach(item => {
                     const imageName = item.textContent.split('✓')[0].trim(); // 移除状态文本
@@ -1334,7 +1406,10 @@ def create_html_template():
                     
                     // 只检查已标注的图像是否有对应的mask文件
                     if (annotatedImages.has(imageName)) {
-                        // 找到对应的标注信息
+                        // 获取该图片的标注数量
+                        const count = annotationCounts[imageName] || 0;
+                        
+                        // 找到对应的标注信息（用于获取gt_path）
                         const annotation = annotations.find(a => a.img_name === imageName);
                         let maskPath;
                         
@@ -1353,7 +1428,8 @@ def create_html_template():
                             
                             if (hasMaskFile) {
                                 if (statusElement) {
-                                    statusElement.textContent = '✓ 已标注';
+                                    // 显示标注数量：已标注xx张
+                                    statusElement.textContent = count > 1 ? `✓ 已标注${count}张` : '✓ 已标注';
                                     statusElement.style.display = 'inline-block';
                                     statusElement.style.color = 'green';
                                 }
@@ -1361,7 +1437,7 @@ def create_html_template():
                             } else {
                                 // 有标注但没有mask文件，显示警告
                                 if (statusElement) {
-                                    statusElement.textContent = '⚠ 标注不完整';
+                                    statusElement.textContent = count > 1 ? `⚠ 标注不完整(${count}张)` : '⚠ 标注不完整';
                                     statusElement.style.display = 'inline-block';
                                     statusElement.style.color = 'orange';
                                 }
@@ -1371,7 +1447,8 @@ def create_html_template():
                         .catch(() => {
                             // 检查失败，假设已标注
                             if (statusElement) {
-                                statusElement.textContent = '✓ 已标注';
+                                // 显示标注数量：已标注xx张
+                                statusElement.textContent = count > 1 ? `✓ 已标注${count}张` : '✓ 已标注';
                                 statusElement.style.display = 'inline-block';
                                 statusElement.style.color = 'green';
                             }
@@ -1509,11 +1586,22 @@ def create_html_template():
                     }
                     
                     // 显示已保存的标注信息
-                    updateStatus(`已加载图像: ${data.filename} (已标注: ${data.saved_annotation.object} - ${data.saved_annotation.action})`);
-                    // 显示已标注状态
+                    const annotationCount = data.annotation_count || 0;
+                    const statusText = annotationCount > 1 
+                        ? `已加载图像: ${data.filename} (当前显示: ${data.saved_annotation.object} - ${data.saved_annotation.action}, 共${annotationCount}个标注)`
+                        : `已加载图像: ${data.filename} (已标注: ${data.saved_annotation.object} - ${data.saved_annotation.action})`;
+                    updateStatus(statusText);
+                    // 显示已标注状态（更新标注数量）
                     const statusElement = document.getElementById(`status-${data.filename}`);
                     if (statusElement) {
+                        const annotationCount = data.annotation_count || 0;
+                        if (annotationCount > 1) {
+                            statusElement.textContent = `✓ 已标注${annotationCount}张`;
+                        } else {
+                            statusElement.textContent = '✓ 已标注';
+                        }
                         statusElement.style.display = 'inline-block';
+                        statusElement.style.color = 'green';
                     }
                     // 添加已标注样式
                     const imageItem = document.querySelector(`[onclick*="${data.filename}"]`);
@@ -1572,9 +1660,14 @@ def create_html_template():
                         if (response.ok) {
                             // 有mask文件但没有标注信息，显示为已标注
                             updateStatus(`已加载图像: ${data.filename} (已有mask文件)`);
+                            // 通过updateAnnotationStatuses更新标注数量（如果有的话）
+                            updateAnnotationStatuses();
                             const statusElement = document.getElementById(`status-${data.filename}`);
-                            if (statusElement) {
+                            if (statusElement && !statusElement.textContent) {
+                                // 如果updateAnnotationStatuses没有更新，则显示默认状态
+                                statusElement.textContent = '✓ 已标注';
                                 statusElement.style.display = 'inline-block';
+                                statusElement.style.color = 'green';
                             }
                             const imageItem = document.querySelector(`[onclick*="${data.filename}"]`);
                             if (imageItem) {
@@ -1877,7 +1970,10 @@ def create_html_template():
             .then(data => {
                 if (data.success) {
                     updateStatus(data.message);
-                    console.log('保存成功，下一张图片:', data.next_image);
+                    console.log('保存成功，继续在当前图片上标注');
+                    
+                    // 显示顶部提示"已保存"
+                    showToast('已保存', 2000);
                     
                     // 如果需要刷新建议，重新加载
                     if (data.refresh_suggestions) {
@@ -1885,63 +1981,27 @@ def create_html_template():
                         loadSuggestions();
                     }
                     
-                    // 更新标注状态显示
+                    // 更新标注状态显示（会显示标注数量）
                     updateAnnotationStatuses();
                     
-                    // 自动切换到下一张图像
-                    if (data.next_image) {
-                        updateStatus('自动切换到下一张图片...');
-                        console.log('开始加载下一张图片:', data.next_image);
-                        
-                        // 如果有预加载的图像数据，直接使用
-                        if (data.next_image_data) {
-                            console.log('使用预加载的图像数据');
-                            const loadData = {
-                                success: true,
-                                filename: data.next_image,
-                                filepath: '/path/to/' + data.next_image, // 这个路径不重要，因为我们有图像数据
-                                image_data: data.next_image_data,
-                                width: 800, // 这些值会在loadImageData中重新计算
-                                height: 600,
-                                current_index: data.next_index,
-                                total_count: data.total_count
-                            };
-                            loadImageData(loadData);
-                            
-                            // 更新选中状态
-                            document.querySelectorAll('.image-item').forEach(item => {
-                                item.classList.remove('active');
-                            });
-                            const nextItem = document.querySelector(`[onclick*="${data.next_image}"]`);
-                            if (nextItem) {
-                                nextItem.classList.add('active');
-                            }
-                        } else {
-                            // 如果没有预加载数据，则正常加载
-                            fetch(`/load_image/${data.next_image}`)
-                            .then(response => response.json())
-                            .then(loadData => {
-                                if (loadData.success) {
-                                    loadImageData(loadData);
-                                    // 更新选中状态
-                                    document.querySelectorAll('.image-item').forEach(item => {
-                                        item.classList.remove('active');
-                                    });
-                                    const nextItem = document.querySelector(`[onclick*="${data.next_image}"]`);
-                                    if (nextItem) {
-                                        nextItem.classList.add('active');
-                                    }
-                                } else {
-                                    updateStatus('加载下一张图片失败: ' + loadData.error);
-                                }
-                            })
-                            .catch(error => {
-                                updateStatus('加载下一张图片错误: ' + error);
-                            });
-                        }
-                    } else {
-                        updateStatus('没有更多图片，标注完成！');
+                    // 不再自动切换，保持当前图片继续标注
+                    // 清除当前的点，准备添加新的标注
+                    points = [];
+                    labels = [];
+                    affordancePoints = [];
+                    currentMask = null;
+                    currentBbox = null;
+                    
+                    // 重新绘制图像（清除点）
+                    if (currentImage) {
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(currentImage, imageOffsetX, imageOffsetY, 
+                                    currentImage.width * imageScale, 
+                                    currentImage.height * imageScale);
                     }
+                    
+                    // 保持mask显示，但清除点标记
+                    console.log('已保存标注，可以继续添加新的标注点');
                 } else {
                     updateStatus('保存失败: ' + data.error);
                 }

@@ -34,6 +34,32 @@
         .predicted-category { background: #e7f3ff; padding: 5px; margin: 5px 0; border-radius: 3px; }
         .suggestions { background: #fff3cd; padding: 5px; margin: 5px 0; border-radius: 3px; border-left: 3px solid #ffc107; }
         .suggestions small { color: #856404; }
+        /* Toast通知样式 */
+        .toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #28a745;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 10000;
+            font-size: 16px;
+            font-weight: 500;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out;
+            pointer-events: none;
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+        .toast.hide {
+            opacity: 0;
+            transform: translateX(-50%) translateY(-20px);
+        }
     </style>
 </head>
 <body>
@@ -128,6 +154,9 @@
         </div>
     </div>
 
+    <!-- Toast通知容器 -->
+    <div id="toast" class="toast"></div>
+
     <script>
         let currentImage = null;
         let currentImagePath = null;
@@ -144,6 +173,24 @@
         let imageOffsetX = 0;
         let imageOffsetY = 0;
         let outputInfo = null;  // 存储输出目录信息
+        
+        // Toast通知函数
+        function showToast(message, duration = 2000) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.remove('hide');
+            toast.classList.add('show');
+            
+            // 延迟后自动隐藏
+            setTimeout(() => {
+                toast.classList.remove('show');
+                toast.classList.add('hide');
+                // 动画结束后移除类
+                setTimeout(() => {
+                    toast.classList.remove('hide');
+                }, 300);
+            }, duration);
+        }
         
         // 获取输出目录信息
         function getOutputInfo() {
@@ -179,16 +226,20 @@
         
         // 从gt_path获取mask文件路径
         function getMaskPathFromGtPath(gtPath) {
-            // 检查是否是任务目录格式：task_X/masks/...
+            // 检查是否是任务目录格式：task_X/masks/... 或其他目录/masks/...
             const taskMatch = gtPath.match(/^(task_\d+)\/masks\//);
             if (taskMatch) {
                 // 新的路径格式：task_X/masks/...
+                return `/output/${gtPath}`;
+            } else if (gtPath.includes('/masks/')) {
+                // 格式：目录名/masks/文件名 (如 robot_arm_02/masks/1_object_mask.png)
+                // 直接拼接output前缀
                 return `/output/${gtPath}`;
             } else if (gtPath.startsWith('output/')) {
                 // 完整路径格式：output/task_X/masks/...
                 return `/${gtPath}`;
             } else {
-                // 旧路径格式：masks/...
+                // 旧路径格式：masks/... 或直接文件名
                 return `/output/masks/${gtPath}`;
             }
         }
@@ -201,6 +252,13 @@
                 const annotations = data.annotations || [];
                 const annotatedImages = new Set(annotations.map(a => a.img_name));
                 
+                // 计算每张图片的标注数量
+                const annotationCounts = {};
+                annotations.forEach(ann => {
+                    const imgName = ann.img_name;
+                    annotationCounts[imgName] = (annotationCounts[imgName] || 0) + 1;
+                });
+                
                 // 更新所有图像的状态
                 document.querySelectorAll('.image-item').forEach(item => {
                     const imageName = item.textContent.split('✓')[0].trim(); // 移除状态文本
@@ -208,7 +266,10 @@
                     
                     // 只检查已标注的图像是否有对应的mask文件
                     if (annotatedImages.has(imageName)) {
-                        // 找到对应的标注信息
+                        // 获取该图片的标注数量
+                        const count = annotationCounts[imageName] || 0;
+                        
+                        // 找到对应的标注信息（用于获取gt_path）
                         const annotation = annotations.find(a => a.img_name === imageName);
                         let maskPath;
                         
@@ -227,7 +288,8 @@
                             
                             if (hasMaskFile) {
                                 if (statusElement) {
-                                    statusElement.textContent = '✓ 已标注';
+                                    // 显示标注数量：已标注xx张
+                                    statusElement.textContent = count > 1 ? `✓ 已标注${count}张` : '✓ 已标注';
                                     statusElement.style.display = 'inline-block';
                                     statusElement.style.color = 'green';
                                 }
@@ -235,7 +297,7 @@
                             } else {
                                 // 有标注但没有mask文件，显示警告
                                 if (statusElement) {
-                                    statusElement.textContent = '⚠ 标注不完整';
+                                    statusElement.textContent = count > 1 ? `⚠ 标注不完整(${count}张)` : '⚠ 标注不完整';
                                     statusElement.style.display = 'inline-block';
                                     statusElement.style.color = 'orange';
                                 }
@@ -245,7 +307,8 @@
                         .catch(() => {
                             // 检查失败，假设已标注
                             if (statusElement) {
-                                statusElement.textContent = '✓ 已标注';
+                                // 显示标注数量：已标注xx张
+                                statusElement.textContent = count > 1 ? `✓ 已标注${count}张` : '✓ 已标注';
                                 statusElement.style.display = 'inline-block';
                                 statusElement.style.color = 'green';
                             }
@@ -383,11 +446,22 @@
                     }
                     
                     // 显示已保存的标注信息
-                    updateStatus(`已加载图像: ${data.filename} (已标注: ${data.saved_annotation.object} - ${data.saved_annotation.action})`);
-                    // 显示已标注状态
+                    const annotationCount = data.annotation_count || 0;
+                    const statusText = annotationCount > 1 
+                        ? `已加载图像: ${data.filename} (当前显示: ${data.saved_annotation.object} - ${data.saved_annotation.action}, 共${annotationCount}个标注)`
+                        : `已加载图像: ${data.filename} (已标注: ${data.saved_annotation.object} - ${data.saved_annotation.action})`;
+                    updateStatus(statusText);
+                    // 显示已标注状态（更新标注数量）
                     const statusElement = document.getElementById(`status-${data.filename}`);
                     if (statusElement) {
+                        const annotationCount = data.annotation_count || 0;
+                        if (annotationCount > 1) {
+                            statusElement.textContent = `✓ 已标注${annotationCount}张`;
+                        } else {
+                            statusElement.textContent = '✓ 已标注';
+                        }
                         statusElement.style.display = 'inline-block';
+                        statusElement.style.color = 'green';
                     }
                     // 添加已标注样式
                     const imageItem = document.querySelector(`[onclick*="${data.filename}"]`);
@@ -446,9 +520,14 @@
                         if (response.ok) {
                             // 有mask文件但没有标注信息，显示为已标注
                             updateStatus(`已加载图像: ${data.filename} (已有mask文件)`);
+                            // 通过updateAnnotationStatuses更新标注数量（如果有的话）
+                            updateAnnotationStatuses();
                             const statusElement = document.getElementById(`status-${data.filename}`);
-                            if (statusElement) {
+                            if (statusElement && !statusElement.textContent) {
+                                // 如果updateAnnotationStatuses没有更新，则显示默认状态
+                                statusElement.textContent = '✓ 已标注';
                                 statusElement.style.display = 'inline-block';
+                                statusElement.style.color = 'green';
                             }
                             const imageItem = document.querySelector(`[onclick*="${data.filename}"]`);
                             if (imageItem) {
@@ -751,7 +830,10 @@
             .then(data => {
                 if (data.success) {
                     updateStatus(data.message);
-                    console.log('保存成功，下一张图片:', data.next_image);
+                    console.log('保存成功，继续在当前图片上标注');
+                    
+                    // 显示顶部提示"已保存"
+                    showToast('已保存', 2000);
                     
                     // 如果需要刷新建议，重新加载
                     if (data.refresh_suggestions) {
@@ -759,63 +841,27 @@
                         loadSuggestions();
                     }
                     
-                    // 更新标注状态显示
+                    // 更新标注状态显示（会显示标注数量）
                     updateAnnotationStatuses();
                     
-                    // 自动切换到下一张图像
-                    if (data.next_image) {
-                        updateStatus('自动切换到下一张图片...');
-                        console.log('开始加载下一张图片:', data.next_image);
-                        
-                        // 如果有预加载的图像数据，直接使用
-                        if (data.next_image_data) {
-                            console.log('使用预加载的图像数据');
-                            const loadData = {
-                                success: true,
-                                filename: data.next_image,
-                                filepath: '/path/to/' + data.next_image, // 这个路径不重要，因为我们有图像数据
-                                image_data: data.next_image_data,
-                                width: 800, // 这些值会在loadImageData中重新计算
-                                height: 600,
-                                current_index: data.next_index,
-                                total_count: data.total_count
-                            };
-                            loadImageData(loadData);
-                            
-                            // 更新选中状态
-                            document.querySelectorAll('.image-item').forEach(item => {
-                                item.classList.remove('active');
-                            });
-                            const nextItem = document.querySelector(`[onclick*="${data.next_image}"]`);
-                            if (nextItem) {
-                                nextItem.classList.add('active');
-                            }
-                        } else {
-                            // 如果没有预加载数据，则正常加载
-                            fetch(`/load_image/${data.next_image}`)
-                            .then(response => response.json())
-                            .then(loadData => {
-                                if (loadData.success) {
-                                    loadImageData(loadData);
-                                    // 更新选中状态
-                                    document.querySelectorAll('.image-item').forEach(item => {
-                                        item.classList.remove('active');
-                                    });
-                                    const nextItem = document.querySelector(`[onclick*="${data.next_image}"]`);
-                                    if (nextItem) {
-                                        nextItem.classList.add('active');
-                                    }
-                                } else {
-                                    updateStatus('加载下一张图片失败: ' + loadData.error);
-                                }
-                            })
-                            .catch(error => {
-                                updateStatus('加载下一张图片错误: ' + error);
-                            });
-                        }
-                    } else {
-                        updateStatus('没有更多图片，标注完成！');
+                    // 不再自动切换，保持当前图片继续标注
+                    // 清除当前的点，准备添加新的标注
+                    points = [];
+                    labels = [];
+                    affordancePoints = [];
+                    currentMask = null;
+                    currentBbox = null;
+                    
+                    // 重新绘制图像（清除点）
+                    if (currentImage) {
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(currentImage, imageOffsetX, imageOffsetY, 
+                                    currentImage.width * imageScale, 
+                                    currentImage.height * imageScale);
                     }
+                    
+                    // 保持mask显示，但清除点标记
+                    console.log('已保存标注，可以继续添加新的标注点');
                 } else {
                     updateStatus('保存失败: ' + data.error);
                 }

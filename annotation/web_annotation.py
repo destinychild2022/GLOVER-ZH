@@ -81,21 +81,11 @@ class WebAnnotator:
         
         # 预定义的物体和动作类别 - 针对日常生活场景优化
         self.object_categories = [
-            # 厨房用品
-            "cup", "mug", "bowl", "plate", "fork", "spoon", "knife", "pan", "pot", "kettle", "bottle", "can", "jar",
-            "blender", "microwave", "refrigerator", "dishwasher", "toaster", "oven", "stove", "sink", "faucet",
-            # 电子设备
-            "phone", "laptop", "computer", "tablet", "remote", "keyboard", "mouse", "headphone", "speaker", "camera",
-            # 家具
-            "chair", "table", "desk", "bed", "sofa", "cabinet", "drawer", "shelf", "mirror", "lamp", "light",
-            # 门窗户
-            "door", "window", "curtain", "blind", "lock", "key",
-            # 个人物品
-            "book", "pen", "paper", "wallet", "key", "bag", "backpack", "clothes", "shoes", "hat", "glasses",
-            # 清洁用品
-            "broom", "mop", "vacuum", "sponge", "towel", "soap", "detergent",
-            # 其他
-            "tool", "device", "container", "box", "food", "drink", "plant", "toy", "gift"
+            # 机械零件
+            "adjusting screw", "set screw", "ring", "pin", "rod", "plug", "cone spring", "ball", 
+            "spring seat", "core", "spring", "seat", "cone sleeve", "glyd ring", "snap ring", 
+            "screw seat", "nut", "cone core", "step seal", "damping core",
+
         ]
         
         # 手部相关的动作类别 - 针对日常生活场景优化

@@ -1065,6 +1065,101 @@ def delete_annotation():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+@app.route('/delete_mask', methods=['POST'])
+def delete_mask():
+    """根据图片名称和物体名称删除对应的mask和标注记录"""
+    try:
+        data = request.json
+        image_name = data.get('image_name')
+        object_category = data.get('object_category')
+        
+        if not image_name or not image_name.strip():
+            return jsonify({'error': 'Missing image_name'}), 400
+        if not object_category or not object_category.strip():
+            return jsonify({'error': 'Missing or empty object_category'}), 400
+        
+        image_name = image_name.strip()
+        object_category = object_category.strip()
+        
+        # 验证图片名称是否有效
+        if image_name not in annotator.image_list:
+            return jsonify({'error': f'Image not found: {image_name}. Available images: {annotator.image_list[:10]}...'}), 400
+        
+        # 使用提供的图片文件名
+        image_filename = image_name
+        base_name = Path(image_filename).stem
+        
+        # 清理物体类别名称，用于匹配文件名
+        safe_object_category = object_category.replace('/', '_').replace('\\', '_').replace(' ', '_')
+        mask_filename = f"{base_name}_{safe_object_category}_mask.png"
+        mask_path = os.path.join(annotator.output_dir, "masks", mask_filename)
+        
+        deleted_mask = False
+        deleted_annotations = 0
+        
+        # 删除mask文件
+        if os.path.exists(mask_path):
+            os.remove(mask_path)
+            deleted_mask = True
+            print(f"删除mask文件: {mask_path}")
+        else:
+            print(f"mask文件不存在: {mask_path}")
+        
+        # 从标注列表中删除匹配的记录
+        remaining_annotations = []
+        for ann in annotator.annotations:
+            if ann['img_name'] == image_filename and ann.get('object') == object_category:
+                deleted_annotations += 1
+                print(f"从标注列表中删除: {image_filename} - {object_category}")
+            else:
+                remaining_annotations.append(ann)
+        
+        annotator.annotations = remaining_annotations
+        
+        # 更新memory文件中的标注数据
+        annotator.save_memory()
+        
+        # 自动更新annotations.json文件
+        try:
+            output_path = os.path.join(annotator.output_dir, "annotations.json")
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(annotator.annotations, f, indent=4, ensure_ascii=False)
+            
+            print(f"自动更新annotations.json: {len(annotator.annotations)}条标注")
+        except Exception as e:
+            print(f"自动更新annotations.json失败: {e}")
+        
+        message_parts = []
+        if deleted_mask:
+            message_parts.append(f"已删除mask文件")
+        if deleted_annotations > 0:
+            message_parts.append(f"已删除{deleted_annotations}条标注记录")
+        
+        if not deleted_mask and deleted_annotations == 0:
+            return jsonify({
+                'success': False,
+                'message': f'未找到对应的mask文件或标注记录: {image_filename} - {object_category}',
+                'current_index': annotator.current_image_index,
+                'total_count': len(annotator.image_list),
+                'remaining_annotations': len(annotator.annotations)
+            })
+        
+        return jsonify({
+            'success': True,
+            'message': f'删除成功！{", ".join(message_parts)}。剩余标注: {len(annotator.annotations)}条',
+            'current_index': annotator.current_image_index,
+            'total_count': len(annotator.image_list),
+            'remaining_annotations': len(annotator.annotations)
+        })
+        
+    except Exception as e:
+        print(f"删除mask失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/get_annotations', methods=['GET'])
 def get_annotations():
     """获取所有标注"""
@@ -1264,6 +1359,20 @@ def create_html_template():
                 <button class="button" onclick="clearPoints()">清除点</button>
                 <button class="button" onclick="skipCurrentImage()">跳过当前图片</button>
                 <button class="button" onclick="saveDataset()">保存数据集</button>
+            </div>
+            
+            <div class="input-group">
+                <label>删除Mask (按图片名称和物体名称):</label>
+                <div style="display: flex; gap: 5px; flex-direction: column;">
+                    <input type="text" id="deleteMaskImageName" list="imageNameList" placeholder="图片名称(支持自动补全)" style="width: 100%;">
+                    <datalist id="imageNameList">
+                        {% for image in image_list %}
+                        <option value="{{ image }}">
+                        {% endfor %}
+                    </datalist>
+                    <input type="text" id="deleteMaskObjectCategory" list="objectCategories" placeholder="物体名称(支持自动补全)" style="width: 100%;">
+                </div>
+                <button class="button danger" onclick="deleteMask()" style="margin-top: 5px; width: 100%;">删除Mask</button>
             </div>
             
             <div class="status" id="status">就绪</div>
@@ -2145,6 +2254,97 @@ def create_html_template():
                 console.error('删除错误:', error);
             });
         }
+        
+        function deleteMask() {
+            const imageNameInput = document.getElementById('deleteMaskImageName');
+            const objectCategoryInput = document.getElementById('deleteMaskObjectCategory');
+            
+            const imageName = imageNameInput.value.trim();
+            const objectCategory = objectCategoryInput.value.trim();
+            
+            if (!imageName) {
+                updateStatus('请输入图片名称');
+                return;
+            }
+            
+            if (!objectCategory) {
+                updateStatus('请输入物体名称');
+                return;
+            }
+            
+            // 验证图片名称是否存在
+            fetch('/get_image_list')
+            .then(response => response.json())
+            .then(imageListData => {
+                const images = imageListData.images || [];
+                
+                if (!images.includes(imageName)) {
+                    updateStatus(`图片名称不存在: ${imageName}`);
+                    return;
+                }
+                
+                if (!confirm(`确定要删除图片 "${imageName}" 中物体类别为 "${objectCategory}" 的mask和标注记录吗？此操作不可恢复！`)) {
+                    return;
+                }
+                
+                updateStatus('正在删除mask和标注记录...');
+                
+                fetch('/delete_mask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        image_name: imageName,
+                        object_category: objectCategory
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        updateStatus(data.message);
+                        showToast(data.message, 3000);
+                        
+                        // 清空输入框
+                        imageNameInput.value = '';
+                        objectCategoryInput.value = '';
+                        
+                        // 更新标注状态显示
+                        updateAnnotationStatuses();
+                        
+                        // 如果删除的是当前图片的标注，刷新当前图片显示
+                        if (currentImagePath) {
+                            const currentFilename = currentImagePath.split('/').pop();
+                            if (currentFilename === imageName) {
+                                // 重新加载当前图片以刷新显示
+                                fetch(`/load_image/${imageName}`)
+                                .then(response => response.json())
+                                .then(loadData => {
+                                    if (loadData.success) {
+                                        loadImageData(loadData);
+                                    }
+                                })
+                                .catch(error => {
+                                    console.error('重新加载图片失败:', error);
+                                });
+                            }
+                        }
+                    } else {
+                        updateStatus(data.message || '删除失败: ' + (data.error || '未知错误'));
+                        showToast(data.message || '删除失败', 3000);
+                    }
+                })
+                .catch(error => {
+                    updateStatus('删除错误: ' + error);
+                    showToast('删除错误: ' + error, 3000);
+                    console.error('删除错误:', error);
+                });
+            })
+            .catch(error => {
+                updateStatus('获取图片列表失败: ' + error);
+                console.error('获取图片列表失败:', error);
+            });
+        }
 
         function skipCurrentImage() {
             if (!currentImagePath) {
@@ -2251,6 +2451,7 @@ def create_html_template():
         function setupTabCompletion() {
             const objectInput = document.getElementById('objectCategory');
             const actionInput = document.getElementById('actionCategory');
+            const deleteMaskObjectInput = document.getElementById('deleteMaskObjectCategory');
             
             // 使用全局建议数据，如果没有则获取
             if (!window.objectSuggestions || !window.actionSuggestions) {
@@ -2340,6 +2541,45 @@ def create_html_template():
                     }
                 }
             });
+            
+            // 删除Mask的物体类别TAB补全
+            if (deleteMaskObjectInput) {
+                deleteMaskObjectInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Tab') {
+                        e.preventDefault();
+                        const currentValue = this.value.trim();
+                        const allCategories = {{ object_categories | tojson }};
+                        const bestMatch = findBestMatch(currentValue, window.objectSuggestions || [], allCategories);
+                        if (bestMatch) {
+                            this.value = bestMatch;
+                            this.focus();
+                        }
+                    }
+                });
+            }
+            
+            // 删除Mask的图片名称TAB补全
+            const deleteMaskImageInput = document.getElementById('deleteMaskImageName');
+            if (deleteMaskImageInput) {
+                deleteMaskImageInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Tab') {
+                        e.preventDefault();
+                        const currentValue = this.value.trim();
+                        const imageList = {{ image_list | tojson }};
+                        
+                        // 查找匹配的图片名称
+                        const inputLower = currentValue.toLowerCase();
+                        const matches = imageList.filter(img => 
+                            img.toLowerCase().startsWith(inputLower)
+                        );
+                        
+                        if (matches.length > 0) {
+                            this.value = matches[0];
+                            this.focus();
+                        }
+                    }
+                });
+            }
             
             // Q键快捷键切换点击模式
             document.addEventListener('keydown', function(e) {
